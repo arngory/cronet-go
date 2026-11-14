@@ -12,6 +12,9 @@ apple:
 generate_net_errors:
 	go run ./cmd/build-naive generate-net-errors
 
+generate_root_store:
+	go run ./cmd/build-naive generate-root-store
+
 test: build
 	cd test && go test -a -count=1 -v .
 
