@@ -279,7 +279,9 @@ jobs:
           path: .
 
       - name: Verify checksums
-        run: sha256sum -c SHA256SUMS
+        run: |
+          sha256sum -c --quiet SHA256SUMS
+          echo "SHA256SUMS: $(wc -l < SHA256SUMS) files verified"
 
       - name: Get naiveproxy commit
         id: naive
