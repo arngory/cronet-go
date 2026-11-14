@@ -26,6 +26,11 @@ func (p PublicKeyPins) AddPinSHA256(pin string) {
 	cronet.PublicKeyPinsPinsSha256Add(p.ptr, pin)
 }
 
+// AddPinnedSHA256 is AddPinSHA256 under the name the cgo binding has: code built either way calls this one.
+func (p PublicKeyPins) AddPinnedSHA256(hash string) {
+	cronet.PublicKeyPinsPinsSha256Add(p.ptr, hash)
+}
+
 func (p PublicKeyPins) PinSHA256Size() int {
 	return int(cronet.PublicKeyPinsPinsSha256Size(p.ptr))
 }
