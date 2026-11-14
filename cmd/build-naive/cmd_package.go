@@ -145,12 +145,9 @@ func generateLocalCGOFiles(targets []Target) {
 
 		var ldFlags []string
 
-		libraryPath := fmt.Sprintf("${SRCDIR}/lib/%s/libcronet.a", directoryName)
-		if t.GOOS == "darwin" || t.GOOS == "ios" {
-			ldFlags = append(ldFlags, libraryPath)
-		} else {
-			ldFlags = append(ldFlags, fmt.Sprintf("-L${SRCDIR}/lib/%s", directoryName), "-l:libcronet.a")
-		}
+		// The library is named by its path on every platform: Go 1.26.11 and
+		// later reject -l:libcronet.a in #cgo LDFLAGS
+		ldFlags = append(ldFlags, fmt.Sprintf("${SRCDIR}/lib/%s/libcronet.a", directoryName))
 
 		ldFlags = append(ldFlags, linkFlags.LDFlags...)
 		ldFlags = append(ldFlags, linkFlags.Libs...)
@@ -360,11 +357,9 @@ go 1.20
 
 		var ldFlags []string
 
-		if t.GOOS == "darwin" || t.GOOS == "ios" {
-			ldFlags = append(ldFlags, "${SRCDIR}/libcronet.a")
-		} else {
-			ldFlags = append(ldFlags, "-L${SRCDIR}", "-l:libcronet.a")
-		}
+		// The library is named by its path on every platform: Go 1.26.11 and
+		// later reject -l:libcronet.a in #cgo LDFLAGS
+		ldFlags = append(ldFlags, "${SRCDIR}/libcronet.a")
 
 		ldFlags = append(ldFlags, linkFlags.LDFlags...)
 		ldFlags = append(ldFlags, linkFlags.Libs...)
