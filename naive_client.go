@@ -2,6 +2,7 @@ package cronet
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"errors"
 	"net"
@@ -10,6 +11,7 @@ import (
 	"runtime"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/sagernet/sing/common"
 	"github.com/sagernet/sing/common/bufio"
@@ -58,6 +60,7 @@ type NaiveClient struct {
 	extraHeaders             map[string]string
 	receiveWindow            uint64
 	trustedRootCertificates  string
+	publicKeyPins            [][]byte
 	dnsResolver              DNSResolverFunc
 	echEnabled               bool
 	echConfigList            []byte
@@ -98,7 +101,16 @@ type NaiveClientOptions struct {
 	QUIC                     bool
 	QUICCongestionControl    QUICCongestionControl
 	QUICSessionReceiveWindow uint64
+	// CertificatePublicKeySHA256 pins the server's certificate: SHA-256 hashes of the DER SubjectPublicKeyInfo of
+	// keys, one of which must be in the chain the server presents (the leaf's, to pin the server and not its CA).
+	// It is checked besides the chain, not in place of it, and for certificates of TrustedRootCertificates too.
+	// ServerName must be a host name: Chromium keeps no pins for an address.
+	CertificatePublicKeySHA256 [][]byte
 }
+
+// publicKeyPinLifetime is how long the engine keeps the pins of a client: longer than any process lives. A pin
+// without a date in the future is no pin to Chromium.
+const publicKeyPinLifetime = 10 * 365 * 24 * time.Hour
 
 func NewNaiveClient(config NaiveClientOptions) (*NaiveClient, error) {
 	err := checkLibrary()
@@ -115,6 +127,17 @@ func NewNaiveClient(config NaiveClientOptions) (*NaiveClient, error) {
 	serverName := config.ServerName
 	if serverName == "" {
 		serverName = config.ServerAddress.AddrString()
+	}
+
+	if len(config.CertificatePublicKeySHA256) > 0 {
+		if M.ParseAddr(serverName).IsValid() {
+			return nil, E.New("public key pins need a server name, not an address: ", serverName)
+		}
+		for _, hash := range config.CertificatePublicKeySHA256 {
+			if len(hash) != sha256.Size {
+				return nil, E.New("invalid public key pin: ", len(hash), " bytes, a SHA-256 hash is ", sha256.Size)
+			}
+		}
 	}
 
 	serverURL := &url.URL{
@@ -159,6 +182,7 @@ func NewNaiveClient(config NaiveClientOptions) (*NaiveClient, error) {
 		extraHeaders:             config.ExtraHeaders,
 		concurrency:              concurrency,
 		trustedRootCertificates:  config.TrustedRootCertificates,
+		publicKeyPins:            config.CertificatePublicKeySHA256,
 		dnsResolver:              config.DNSResolver,
 		echEnabled:               config.ECHEnabled,
 		echConfigList:            config.ECHConfigList,
@@ -386,6 +410,21 @@ func (c *NaiveClient) startEngine(tcpDialer Dialer, udpDialer UDPDialer, dnsServ
 	} else {
 		params.SetEnableQuic(false)
 		params.SetEnableHTTP2(true)
+	}
+
+	if len(c.publicKeyPins) > 0 {
+		pins := NewPublicKeyPins()
+		pins.SetHost(c.serverName)
+		for _, hash := range c.publicKeyPins {
+			pins.AddPinnedSHA256("sha256/" + base64.StdEncoding.EncodeToString(hash))
+		}
+		pins.SetIncludeSubdomains(false)
+		pins.SetExpirationDate(time.Now().Add(publicKeyPinLifetime).UnixMilli())
+		// the engine's parameters take a copy
+		params.AddPublicKeyPins(pins)
+		pins.Destroy()
+		// a root of TrustedRootCertificates is a local trust anchor, which Chromium lets past the pins by default
+		params.SetEnablePublicKeyPinningBypassForLocalTrustAnchors(false)
 	}
 
 	paramsError := params.SetAsyncDNS(true)
