@@ -48,27 +48,30 @@ const (
 )
 
 type NaiveClient struct {
-	state                    atomic.Uint32
-	ctx                      context.Context
-	dialer                   N.Dialer
-	logger                   logger.ContextLogger
-	serverAddress            M.Socksaddr
-	serverName               string
-	serverURL                string
-	authorization            string
-	concurrency              int
-	extraHeaders             map[string]string
-	receiveWindow            uint64
-	trustedRootCertificates  string
-	publicKeyPins            [][]byte
-	dnsResolver              DNSResolverFunc
-	echEnabled               bool
-	echConfigList            []byte
-	echQueryServerName       string
-	echMutex                 sync.RWMutex
-	testForceUDPLoopback     bool
-	quicEnabled              bool
-	quicCongestionControl    QUICCongestionControl
+	state                   atomic.Uint32
+	ctx                     context.Context
+	dialer                  N.Dialer
+	logger                  logger.ContextLogger
+	serverAddress           M.Socksaddr
+	serverName              string
+	serverURL               string
+	authorization           string
+	concurrency             int
+	extraHeaders            map[string]string
+	receiveWindow           uint64
+	trustedRootCertificates string
+	publicKeyPins           [][]byte
+	dnsResolver             DNSResolverFunc
+	echEnabled              bool
+	echConfigList           []byte
+	echQueryServerName      string
+	echMutex                sync.RWMutex
+	testForceUDPLoopback    bool
+	quicEnabled             bool
+	quicCongestionControl   QUICCongestionControl
+	quicAllowLocalRoots     bool
+	// the experimental options, as JSON, of the engine started last: what the client's options came to
+	experimentalOptions      atomic.Pointer[string]
 	quicSessionReceiveWindow uint64
 	counter                  atomic.Uint64
 	started                  chan struct{}
@@ -101,6 +104,11 @@ type NaiveClientOptions struct {
 	QUIC                     bool
 	QUICCongestionControl    QUICCongestionControl
 	QUICSessionReceiveWindow uint64
+	// QUICAllowLocallyTrustedRoots lets QUIC take a server whose chain verifies against a locally trusted root:
+	// one of the file SSL_CERT_FILE names (Linux, Android). Without it QUIC wants a root Chromium knows, as Chrome
+	// does, while HTTP/2 takes such a root either way. The chain, the name and the key pins are checked as before.
+	// With TrustedRootCertificates it changes nothing: those roots pass over QUIC already.
+	QUICAllowLocallyTrustedRoots bool
 	// CertificatePublicKeySHA256 pins the server's certificate: SHA-256 hashes of the DER SubjectPublicKeyInfo of
 	// keys, one of which must be in the chain the server presents (the leaf's, to pin the server and not its CA).
 	// It is checked besides the chain, not in place of it, and for certificates of TrustedRootCertificates too.
@@ -191,6 +199,7 @@ func NewNaiveClient(config NaiveClientOptions) (*NaiveClient, error) {
 		singleEngine:             config.TestForceSingleEngine || runtime.GOOS == "ios",
 		quicEnabled:              config.QUIC,
 		quicCongestionControl:    config.QUICCongestionControl,
+		quicAllowLocalRoots:      config.QUICAllowLocallyTrustedRoots,
 		receiveWindow:            config.ReceiveWindow,
 		quicSessionReceiveWindow: config.QUICSessionReceiveWindow,
 		started:                  make(chan struct{}),
@@ -445,6 +454,10 @@ func (c *NaiveClient) startEngine(tcpDialer Dialer, udpDialer UDPDialer, dnsServ
 				sessionReceiveWindow = 15 * 1024 * 1024
 			}
 			paramsError = params.SetQUICOptions("", string(c.quicCongestionControl), streamReceiveWindow, sessionReceiveWindow)
+			// after SetQUICOptions, which writes the "QUIC" dictionary anew
+			if paramsError == nil && c.quicAllowLocalRoots {
+				paramsError = params.SetQUICAllowUnknownCertRoots(true)
+			}
 		} else {
 			receiveWindow := c.receiveWindow
 			if receiveWindow == 0 {
@@ -466,6 +479,8 @@ func (c *NaiveClient) startEngine(tcpDialer Dialer, udpDialer UDPDialer, dnsServ
 		return Engine{}, paramsError
 	}
 
+	experimentalOptions := params.ExperimentalOptions()
+	c.experimentalOptions.Store(&experimentalOptions)
 	result := engine.StartWithParams(params)
 	params.Destroy()
 	if result != ResultSuccess {
@@ -473,6 +488,15 @@ func (c *NaiveClient) startEngine(tcpDialer Dialer, udpDialer UDPDialer, dnsServ
 		return Engine{}, E.New("failed to start engine: ", int(result))
 	}
 	return engine, nil
+}
+
+// ExperimentalOptions are the experimental options, as JSON, of the engine this client started last: what its
+// options came to. Empty before Start.
+func (c *NaiveClient) ExperimentalOptions() string {
+	if options := c.experimentalOptions.Load(); options != nil {
+		return *options
+	}
+	return ""
 }
 
 func (c *NaiveClient) Engine() Engine {

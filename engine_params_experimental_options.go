@@ -109,6 +109,43 @@ func (p EngineParams) SetQUICOptions(connectionOptions string, clientConnectionO
 	return p.SetExperimentalOption("QUIC", options)
 }
 
+// SetQUICAllowUnknownCertRoots sets or clears allow_unknown_cert_roots in the "QUIC" dictionary, beside what is
+// there. With it QUIC takes a server whose chain verifies against a locally trusted root (one of SSL_CERT_FILE on
+// Linux and Android); without it QUIC wants a root Chromium knows, as Chrome does, and ends such a session as a
+// protocol error. Nothing else of the verification changes: the chain, the name, the dates and the key pins are
+// checked as before. A library before arngory/naiveproxy 46938b7 does not know the key.
+//
+// Call it after SetQUICOptions, which writes the dictionary anew.
+func (p EngineParams) SetQUICAllowUnknownCertRoots(allow bool) error {
+	options := strings.TrimSpace(p.ExperimentalOptions())
+	experimentalOptions := make(map[string]any)
+	if options != "" {
+		if err := json.Unmarshal([]byte(options), &experimentalOptions); err != nil {
+			return err
+		}
+	}
+	quic, _ := experimentalOptions["QUIC"].(map[string]any)
+	if allow {
+		if quic == nil {
+			quic = make(map[string]any)
+		}
+		quic["allow_unknown_cert_roots"] = true
+	} else {
+		delete(quic, "allow_unknown_cert_roots")
+	}
+	if len(quic) == 0 {
+		delete(experimentalOptions, "QUIC")
+	} else {
+		experimentalOptions["QUIC"] = quic
+	}
+	encoded, err := json.Marshal(experimentalOptions)
+	if err != nil {
+		return err
+	}
+	p.SetExperimentalOptions(string(encoded))
+	return nil
+}
+
 func (p EngineParams) SetSocketPoolOptions(maxPerPool, maxPerProxyChain, maxPerGroup int) error {
 	return p.SetExperimentalOption("SocketPoolOptions", map[string]any{
 		"max_sockets_per_pool":        maxPerPool,
