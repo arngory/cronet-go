@@ -91,26 +91,34 @@ func TestSystemRootsFromEnvironment(t *testing.T) {
 	}
 }
 
-// TestSystemRootsSetenvBetweenEngines: the variables are read when an engine is started, not once per process. An
-// engine started before SSL_CERT_FILE names the server's root refuses it and keeps refusing it afterwards; an engine
-// started after os.Setenv in the same process accepts it. os.Setenv reaches the C environment in the cgo build and,
-// through purego's fakecgo, in the purego build too.
-func TestSystemRootsSetenvBetweenEngines(t *testing.T) {
+// TestSystemRootsFileReadPerEngine: the file named by SSL_CERT_FILE is read when an engine is started, not once per
+// process, which is how Android embedders switch between the Chrome Root Store only (an empty file) and the system
+// roots (a PEM bundle) without touching the environment again: SSL_CERT_FILE is set once, before the first engine of
+// this test, and only the file's content changes. A running engine keeps what it read at its start.
+func TestSystemRootsFileReadPerEngine(t *testing.T) {
 	env := setupTestEnv(t)
 	const echoPort = systemRootsEchoPort + 1
 	startEchoServer(t, echoPort)
-	serverRoot := filepath.Join(t.TempDir(), "server-root.pem")
-	require.NoError(t, os.WriteFile(serverRoot, env.caPEM, 0o644))
+	rootsFile := filepath.Join(t.TempDir(), "naive-roots.pem")
+	require.NoError(t, os.WriteFile(rootsFile, nil, 0o644))
+	t.Setenv("SSL_CERT_FILE", rootsFile)
 
-	// Empty counts as unset.
-	t.Setenv("SSL_CERT_FILE", "")
-	before := startDefaultVerifierClient(t)
-	checkSystemRootsDial(t, before, echoPort, false)
+	emptyFile := startDefaultVerifierClient(t)
+	checkSystemRootsDial(t, emptyFile, echoPort, false)
 
-	t.Setenv("SSL_CERT_FILE", serverRoot)
-	after := startDefaultVerifierClient(t)
-	checkSystemRootsDial(t, after, echoPort, true)
-	checkSystemRootsDial(t, before, echoPort, false)
+	require.NoError(t, os.WriteFile(rootsFile, env.caPEM, 0o644))
+	withRoot := startDefaultVerifierClient(t)
+	checkSystemRootsDial(t, withRoot, echoPort, true)
+	checkSystemRootsDial(t, emptyFile, echoPort, false)
+
+	require.NoError(t, os.WriteFile(rootsFile, nil, 0o644))
+	emptiedAgain := startDefaultVerifierClient(t)
+	checkSystemRootsDial(t, emptiedAgain, echoPort, false)
+	checkSystemRootsDial(t, withRoot, echoPort, true)
+
+	require.NoError(t, os.Remove(rootsFile))
+	missingFile := startDefaultVerifierClient(t)
+	checkSystemRootsDial(t, missingFile, echoPort, false)
 }
 
 func runSystemRootsChild(t *testing.T) {
