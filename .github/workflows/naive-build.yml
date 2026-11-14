@@ -2,6 +2,11 @@ name: Build
 
 on:
   workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Publish the built libraries to the go-158 branch, overwriting it'
+        type: boolean
+        default: false
   push:
     branches: [claude/clever-feynman-w0e2v1]
 
@@ -353,3 +358,57 @@ jobs:
           name: integration-logs-${{ matrix.name }}
           path: test-artifacts/${{ matrix.name }}/
           if-no-files-found: warn
+
+  # Runs only when asked for by a manual dispatch of this branch. The target
+  # branch is fixed: the push is forced and replaces what was published before.
+  publish:
+    if: github.event_name == 'workflow_dispatch' && inputs.publish == true && github.ref == 'refs/heads/claude/clever-feynman-w0e2v1'
+    needs: [linux, android, integration-test]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version: ^1.22
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: cronet-*
+          path: artifacts/
+
+      - name: Merge artifacts
+        run: |
+          for target in android-arm64 android-arm android-amd64 android-386 linux-amd64; do
+            dir="artifacts/cronet-$target"
+            (cd "$dir" && sha256sum -c --quiet SHA256SUMS)
+            cp -r "$dir/lib" "$dir/include" "$dir/include_cgo.go" .
+          done
+          find lib include include_cgo.go -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | tee SHA256SUMS
+          find lib include -type f -print0 | LC_ALL=C sort -z | xargs -0 stat -c '%s %n'
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Publish
+        run: go run ./cmd/build-naive publish --branch go-158 --skip-all-package
+
+      - name: Show published commit
+        run: |
+          git fetch --depth=1 origin refs/heads/go-158
+          commit=$(git rev-parse FETCH_HEAD)
+          version=$(TZ=UTC git show -s --date=format-local:%Y%m%d%H%M%S --format="v0.0.0-%cd-$(echo "$commit" | cut -c1-12)" FETCH_HEAD)
+          echo "go-158 $commit $version"
+          {
+            echo "### Published to go-158"
+            echo "commit $commit, pseudo-version $version"
+            echo '```'
+            cat SHA256SUMS
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
