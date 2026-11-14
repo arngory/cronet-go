@@ -91,11 +91,38 @@ func TestSystemRootsFromEnvironment(t *testing.T) {
 	}
 }
 
+// TestSystemRootsSetenvBetweenEngines: the variables are read when an engine is started, not once per process. An
+// engine started before SSL_CERT_FILE names the server's root refuses it and keeps refusing it afterwards; an engine
+// started after os.Setenv in the same process accepts it. os.Setenv reaches the C environment in the cgo build and,
+// through purego's fakecgo, in the purego build too.
+func TestSystemRootsSetenvBetweenEngines(t *testing.T) {
+	env := setupTestEnv(t)
+	const echoPort = systemRootsEchoPort + 1
+	startEchoServer(t, echoPort)
+	serverRoot := filepath.Join(t.TempDir(), "server-root.pem")
+	require.NoError(t, os.WriteFile(serverRoot, env.caPEM, 0o644))
+
+	// Empty counts as unset.
+	t.Setenv("SSL_CERT_FILE", "")
+	before := startDefaultVerifierClient(t)
+	checkSystemRootsDial(t, before, echoPort, false)
+
+	t.Setenv("SSL_CERT_FILE", serverRoot)
+	after := startDefaultVerifierClient(t)
+	checkSystemRootsDial(t, after, echoPort, true)
+	checkSystemRootsDial(t, before, echoPort, false)
+}
+
 func runSystemRootsChild(t *testing.T) {
 	port, err := strconv.Atoi(os.Getenv(systemRootsEchoEnv))
 	require.NoError(t, err)
-	accept := os.Getenv(systemRootsExpectEnv) == "accept"
+	client := startDefaultVerifierClient(t)
+	checkSystemRootsDial(t, client, uint16(port), os.Getenv(systemRootsExpectEnv) == "accept")
+}
 
+// startDefaultVerifierClient starts a client without TrustedRootCertificates, so that its engine uses the default
+// certificate verifier.
+func startDefaultVerifierClient(t *testing.T) *cronet.NaiveClient {
 	client, err := cronet.NewNaiveClient(cronet.NaiveClientOptions{
 		ServerAddress: M.ParseSocksaddrHostPort("127.0.0.1", naiveServerPort),
 		ServerName:    "example.org",
@@ -105,9 +132,12 @@ func runSystemRootsChild(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.NoError(t, client.Start())
-	defer client.Close()
+	t.Cleanup(func() { client.Close() })
+	return client
+}
 
-	conn, err := client.DialEarly(context.Background(), M.ParseSocksaddrHostPort("127.0.0.1", uint16(port)))
+func checkSystemRootsDial(t *testing.T, client *cronet.NaiveClient, port uint16, accept bool) {
+	conn, err := client.DialEarly(context.Background(), M.ParseSocksaddrHostPort("127.0.0.1", port))
 	require.NoError(t, err)
 	defer conn.Close()
 
