@@ -12,7 +12,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var publishBranch string
+var (
+	publishBranch         string
+	publishSkipAllPackage bool
+)
 
 var commandPublish = &cobra.Command{
 	Use:   "publish",
@@ -24,6 +27,7 @@ var commandPublish = &cobra.Command{
 
 func init() {
 	commandPublish.Flags().StringVar(&publishBranch, "branch", "go", "Target branch to publish to")
+	commandPublish.Flags().BoolVar(&publishSkipAllPackage, "skip-all-package", false, "Publish the libraries only, without the all package")
 	mainCommand.AddCommand(commandPublish)
 }
 
@@ -49,6 +53,10 @@ func publish() {
 	copyDirectory(filepath.Join(projectRoot, "lib"), filepath.Join(temporaryDirectory, "lib"))
 	copyDirectory(filepath.Join(projectRoot, "include"), filepath.Join(temporaryDirectory, "include"))
 	copyFile(filepath.Join(projectRoot, "include_cgo.go"), filepath.Join(temporaryDirectory, "include_cgo.go"))
+	checksumsPath := filepath.Join(projectRoot, "SHA256SUMS")
+	if _, err := os.Stat(checksumsPath); err == nil {
+		copyFile(checksumsPath, filepath.Join(temporaryDirectory, "SHA256SUMS"))
+	}
 
 	// Use -f (force add) to include .gitignore'd files
 	runCommand(temporaryDirectory, "git", "add", "-f", "-A")
@@ -62,6 +70,14 @@ func publish() {
 	pseudoVersion := formatPseudoVersion(commitTime, firstCommit)
 
 	log.Printf("First commit: %s, pseudo-version: %s", firstCommit[:12], pseudoVersion)
+
+	if publishSkipAllPackage {
+		// The all package requires the modules by pseudo-version, and go mod tidy
+		// resolves those from the repository the module path names. A fork has
+		// its commits elsewhere, so it publishes the libraries only.
+		log.Printf("Published %s to %s branch without the all package", firstCommit, publishBranch)
+		return
+	}
 
 	// === Step 2: Generate and push all package ===
 	log.Print("Step 2: Generating all package...")
