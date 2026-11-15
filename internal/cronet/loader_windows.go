@@ -11,6 +11,7 @@ import (
 	"syscall"
 
 	"github.com/ebitengine/purego"
+	"golang.org/x/sys/windows"
 )
 
 var (
@@ -39,10 +40,17 @@ func doLoadLibrary(path string) error {
 	}
 
 	if path == "" {
-		return errors.New("cronet: library not found. Place libcronet.dll in the executable directory or PATH")
+		return errors.New("cronet: library not found. Place libcronet.dll in the executable's directory, or pass its path to LoadLibrary")
+	}
+	path, err := filepath.Abs(path)
+	if err != nil {
+		return fmt.Errorf("cronet: library path: %w", err)
 	}
 
-	handle, err := syscall.LoadLibrary(path)
+	// By its absolute path, and what it imports from its own directory and
+	// System32 only: not from the current directory or PATH, where a DLL
+	// of the same name could stand in for a system one.
+	handle, err := windows.LoadLibraryEx(path, 0, windows.LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR|windows.LOAD_LIBRARY_SEARCH_SYSTEM32)
 	if err != nil {
 		return fmt.Errorf("cronet: failed to load library %s: %w", path, err)
 	}
@@ -51,27 +59,19 @@ func doLoadLibrary(path string) error {
 	return registerSymbols()
 }
 
+// findLibrary looks for libcronet.dll in the executable's directory, and in
+// PATH only when the embedder asks (librarySearchDirs).
 func findLibrary() string {
-	libName := "libcronet.dll"
-
-	var searchPaths []string
-	executablePath, err := os.Executable()
-	if err == nil {
-		searchPaths = append(searchPaths, filepath.Dir(executablePath))
+	exeDir := ""
+	if executablePath, err := os.Executable(); err == nil {
+		exeDir = filepath.Dir(executablePath)
 	}
-
-	if pathEnv := os.Getenv("PATH"); pathEnv != "" {
-		paths := filepath.SplitList(pathEnv)
-		searchPaths = append(searchPaths, paths...)
-	}
-
-	for _, searchPath := range searchPaths {
-		fullPath := filepath.Join(searchPath, libName)
+	for _, dir := range librarySearchDirs(exeDir, os.Getenv("PATH"), os.Getenv(SearchPathEnv) == "1") {
+		fullPath := filepath.Join(dir, libraryName)
 		if _, err := os.Stat(fullPath); err == nil {
 			return fullPath
 		}
 	}
-
 	return ""
 }
 
