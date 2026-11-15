@@ -139,6 +139,129 @@ jobs:
       - name: Show artifact digest
         run: echo "cronet-linux-${{ matrix.arch }} id=${{ steps.upload.outputs.artifact-id }} sha256=${{ steps.upload.outputs.artifact-digest }}"
 
+  windows:
+    runs-on: windows-2022
+    timeout-minutes: 300
+    env:
+      SCCACHE_ARM64_VERSION: 0.12.0
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          submodules: 'recursive'
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version: ^1.25
+      - name: Get naiveproxy commit
+        id: naive
+        shell: bash
+        run: echo "commit=$(git -C naiveproxy rev-parse HEAD)" >> $GITHUB_OUTPUT
+      - name: Get Chromium version
+        id: chromium
+        shell: bash
+        run: echo "version=$(cat naiveproxy/CHROMIUM_VERSION)" >> $GITHUB_OUTPUT
+      - name: Restore build artifacts
+        id: build-cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: naiveproxy/src/out
+          key: naive-build-${{ steps.naive.outputs.commit }}-${{ hashFiles('cmd/build-naive/cmd_build.go', 'cmd/build-naive/cmd.go') }}-windows-${{ matrix.arch }}
+      - name: Install tools
+        if: steps.build-cache.outputs.cache-hit != 'true'
+        run: choco install ninja -y
+      - name: Install sccache
+        if: steps.build-cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          if ("${{ matrix.arch }}" -eq "arm64") {
+            choco install sccache --version=${{ env.SCCACHE_ARM64_VERSION }} -y
+          } else {
+            choco install sccache -y
+          }
+      - name: Get sccache version
+        if: steps.build-cache.outputs.cache-hit != 'true'
+        id: sccache
+        shell: pwsh
+        run: |
+          $rawVersion = sccache --version
+          if ($LASTEXITCODE -ne 0) {
+            throw "failed to get sccache version"
+          }
+          $version = ($rawVersion | Select-Object -First 1) -replace '^sccache\s+', ''
+          if ([string]::IsNullOrWhiteSpace($version)) {
+            throw "invalid sccache version output: $rawVersion"
+          }
+          "version=$version" >> $env:GITHUB_OUTPUT
+      - name: Restore sccache files
+        id: sccache-cache
+        if: steps.build-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/AppData/Local/Mozilla/sccache
+          key: sccache-windows-${{ matrix.arch }}-${{ steps.sccache.outputs.version }}-${{ steps.chromium.outputs.version }}-${{ steps.naive.outputs.commit }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            sccache-windows-${{ matrix.arch }}-${{ steps.sccache.outputs.version }}-${{ steps.chromium.outputs.version }}-${{ steps.naive.outputs.commit }}-
+            sccache-windows-${{ matrix.arch }}-${{ steps.sccache.outputs.version }}-${{ steps.chromium.outputs.version }}-
+      - name: Reset sccache stats
+        if: steps.build-cache.outputs.cache-hit != 'true'
+        run: sccache -z
+      - name: Build
+        id: build
+        if: steps.build-cache.outputs.cache-hit != 'true'
+        run: go run ./cmd/build-naive --target=windows/${{ matrix.arch }} build
+      - name: Show sccache stats
+        if: always() && steps.build.outcome != '' && steps.build.outcome != 'skipped'
+        run: sccache -s
+      # Saved right after the build, so that a failure in a later step does not cost a rebuild
+      - name: Save sccache files
+        if: always() && steps.build.outcome != '' && steps.build.outcome != 'skipped'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/AppData/Local/Mozilla/sccache
+          key: ${{ steps.sccache-cache.outputs.cache-primary-key }}
+      - name: Save build artifacts
+        if: steps.build.outcome == 'success'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: naiveproxy/src/out
+          key: ${{ steps.build-cache.outputs.cache-primary-key }}
+      - name: Package
+        run: go run ./cmd/build-naive --target=windows/${{ matrix.arch }} package
+      - name: Build and run test binary
+        if: matrix.arch != 'arm64'
+        shell: bash
+        run: |
+          # The DLL beside the test binary, which purego loads from there
+          cp lib/windows_${{ matrix.arch }}/libcronet.dll .
+          CGO_ENABLED=0 GOOS=windows GOARCH=${{ matrix.arch }} go -C test test -tags with_purego -c -o ../cronet.test.exe .
+          ./cronet.test.exe -test.v -test.run='TestEngineVersion|TestPublicSiteChainEndsAtTrustedIntermediate'
+        env:
+          CRONET_TEST_PUBLIC_SITES: "1"
+      - name: Generate checksums
+        shell: bash
+        run: |
+          find lib include include_cgo.go -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | tee SHA256SUMS
+          {
+            echo '### cronet-windows-${{ matrix.arch }} (Chromium ${{ steps.chromium.outputs.version }}, naiveproxy ${{ steps.naive.outputs.commit }})'
+            echo '```'
+            cat SHA256SUMS
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        id: upload
+        with:
+          name: cronet-windows-${{ matrix.arch }}
+          if-no-files-found: error
+          path: |
+            lib/
+            include/
+            include_cgo.go
+            SHA256SUMS
+
   android:
     runs-on: ubuntu-22.04
     timeout-minutes: 120
@@ -368,7 +491,7 @@ jobs:
   # branch is fixed: the push is forced and replaces what was published before.
   publish:
     if: github.event_name == 'workflow_dispatch' && inputs.publish == true && github.ref == 'refs/heads/claude/clever-feynman-w0e2v1'
-    needs: [linux, android, integration-test]
+    needs: [linux, android, windows, integration-test]
     runs-on: ubuntu-22.04
     timeout-minutes: 30
     permissions:
@@ -388,7 +511,7 @@ jobs:
 
       - name: Merge artifacts
         run: |
-          for target in android-arm64 android-arm android-amd64 android-386 linux-amd64; do
+          for target in android-arm64 android-arm android-amd64 android-386 linux-amd64 windows-amd64 windows-arm64; do
             dir="artifacts/cronet-$target"
             (cd "$dir" && sha256sum -c --quiet SHA256SUMS)
             cp -r "$dir/lib" "$dir/include" "$dir/include_cgo.go" .
