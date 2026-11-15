@@ -225,6 +225,12 @@ func runGetClang(t Target) {
 	if err != nil {
 		log.Fatalf("get-clang.sh failed: %v", err)
 	}
+	// Windows ARM64: the SDK's wchar.h includes arm_neon.h (cmd_clang_fix.go).
+	if t.OS == "win" && t.CPU == "arm64" {
+		if err := fixClangFPMHelpers(srcRoot); err != nil {
+			log.Fatalf("fixing clang's arm_vector_types.h: %v", err)
+		}
+	}
 }
 
 func buildTarget(t Target) {
