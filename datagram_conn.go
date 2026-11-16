@@ -3,6 +3,7 @@ package cronet
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"os"
@@ -27,7 +28,8 @@ const (
 // ErrDatagramTruncated is returned by ReadDatagram with a datagram cut to the buffer given.
 var ErrDatagramTruncated = errors.New("cronet: datagram truncated")
 
-var errDatagramNotStarted = errors.New("cronet: datagram stream not started")
+// errDatagramNotStarted matches os.ErrInvalid, as the error of BidirectionalConn.Start does.
+var errDatagramNotStarted = fmt.Errorf("cronet: datagram stream not started: %w", os.ErrInvalid)
 
 // datagramStreamHandle is what DatagramConn uses of a DatagramStream.
 type datagramStreamHandle interface {

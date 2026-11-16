@@ -622,7 +622,7 @@ func TestDatagramConnStartFailure(t *testing.T) {
 	stream.startResult = false
 	conn := newDatagramConn(context.Background(), stream.create, "https://example.org/", nil)
 	waitDone(t, conn)
-	if !errors.Is(conn.Err(), errDatagramNotStarted) {
+	if !errors.Is(conn.Err(), errDatagramNotStarted) || !errors.Is(conn.Err(), os.ErrInvalid) {
 		t.Fatalf("Err = %v", conn.Err())
 	}
 	if _, destroys := stream.counts(); destroys != 1 {
