@@ -3,6 +3,7 @@
 package cronet
 
 import (
+	"net/http"
 	"unsafe"
 
 	"github.com/sagernet/cronet-go/internal/cronet"
@@ -60,6 +61,9 @@ func bsOnResponseHeadersReceivedCallback(stream, headers, negotiatedProtocol uin
 		return 0
 	}
 	headerMap := parseHeaderArray(headers)
+	if listReceiver, ok := cb.(responseHeaderListReceiver); ok {
+		listReceiver.onResponseHeaderList(parseHeaderList(headers))
+	}
 	cb.OnResponseHeadersReceived(BidirectionalStream{stream}, headerMap, cronet.GoString(negotiatedProtocol))
 	return 0
 }
@@ -120,6 +124,24 @@ func bsOnCanceledCallback(stream uintptr) uintptr {
 	cb.OnCanceled(BidirectionalStream{stream})
 	cleanupBidirectionalStream(stream)
 	return 0
+}
+
+// parseHeaderList is parseHeaderArray with every field kept, pseudo-headers left out (responseHeaderList).
+func parseHeaderList(ptr uintptr) http.Header {
+	if ptr == 0 {
+		return nil
+	}
+	arr := (*bidirectionalStreamHeaderArray)(unsafe.Pointer(ptr))
+	count := int(arr.count)
+	if count == 0 {
+		return nil
+	}
+	var list responseHeaderList
+	headers := unsafe.Slice((*bidirectionalStreamHeader)(unsafe.Pointer(arr.headers)), count)
+	for _, h := range headers {
+		list.add(cronet.GoString(h.key), cronet.GoString(h.value))
+	}
+	return list.header
 }
 
 func parseHeaderArray(ptr uintptr) map[string]string {

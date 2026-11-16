@@ -312,7 +312,7 @@ jobs:
           # The DLL beside the test binary, which purego loads from there
           cp lib/windows_${{ matrix.arch }}/libcronet.dll .
           CGO_ENABLED=0 GOOS=windows GOARCH=${{ matrix.arch }} go -C test test -tags with_purego -c -o ../cronet.test.exe .
-          ./cronet.test.exe -test.v -test.run='TestEngineVersion|TestPublicSiteChainEndsAtTrustedIntermediate|TestDatagram|TestExactServerCertificates|TestNaiveExactServerCertificates'
+          ./cronet.test.exe -test.v -test.run='TestEngineVersion|TestPublicSiteChainEndsAtTrustedIntermediate|TestDatagram|TestExactServerCertificates|TestNaiveExactServerCertificates|TestNaiveConnectHeaders'
         env:
           CRONET_TEST_PUBLIC_SITES: "1"
       - name: Generate checksums

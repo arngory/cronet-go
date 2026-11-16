@@ -6,11 +6,12 @@ import (
 	"io"
 	"math/rand"
 	"net"
+	"net/http"
+	"strconv"
 
 	"github.com/sagernet/sing/common"
 	"github.com/sagernet/sing/common/baderror"
 	"github.com/sagernet/sing/common/buf"
-	E "github.com/sagernet/sing/common/exceptions"
 	"github.com/sagernet/sing/common/logger"
 	"github.com/sagernet/sing/common/rw"
 )
@@ -180,9 +181,44 @@ func (p *paddingConn) writerReplaceable() bool {
 
 type NaiveConn interface {
 	net.Conn
+	// Handshake waits for the response to the CONNECT of the stream. A status other than 200 is a *ConnectError.
 	Handshake() error
+	// HandshakeContext is Handshake, given up when ctx is done.
 	HandshakeContext(ctx context.Context) error
+	// ResponseHeader returns the header fields of the response to the CONNECT, every value of each, pseudo-headers
+	// left out, once Handshake has seen a 200; nil before. The caller may change the returned copy.
+	ResponseHeader() http.Header
 }
+
+// ConnectError is the error of a CONNECT that the server answered, with a status other than 200.
+type ConnectError struct {
+	// Status is the status code of the response, 0 if it had none that reads as a number.
+	Status int
+	// Header holds the header fields of the response, every value of each, pseudo-headers left out; never nil.
+	Header http.Header
+}
+
+func (e *ConnectError) Error() string {
+	return "unexpected response status: " + strconv.Itoa(e.Status)
+}
+
+// connectResult reads the response to a CONNECT: nil for a 200, a *ConnectError for another status.
+func connectResult(conn *BidirectionalConn, headers map[string]string) error {
+	status := headers[":status"]
+	if status == "200" {
+		return nil
+	}
+	code, err := strconv.Atoi(status)
+	if err != nil {
+		code = 0
+	}
+	header := conn.ResponseHeader()
+	if header == nil {
+		header = http.Header{}
+	}
+	return &ConnectError{Status: code, Header: header}
+}
+
 type naiveConn struct {
 	net.Conn
 	ctx    context.Context
@@ -197,12 +233,19 @@ func NewNaiveConn(ctx context.Context, conn *BidirectionalConn, l logger.Context
 
 func (c *naiveConn) Handshake() error {
 	headers, err := c.conn.WaitForHeaders()
-	if err != nil {
-		c.logger.WarnContext(c.ctx, "handshake failed: ", err)
-		return err
+	return c.handshakeResult(headers, err)
+}
+
+func (c *naiveConn) HandshakeContext(ctx context.Context) error {
+	headers, err := c.conn.WaitForHeadersContext(ctx)
+	return c.handshakeResult(headers, err)
+}
+
+func (c *naiveConn) handshakeResult(headers map[string]string, err error) error {
+	if err == nil {
+		err = connectResult(c.conn, headers)
 	}
-	if headers[":status"] != "200" {
-		err = E.New("unexpected response status: ", headers[":status"])
+	if err != nil {
 		c.logger.WarnContext(c.ctx, "handshake failed: ", err)
 		return err
 	}
@@ -210,19 +253,12 @@ func (c *naiveConn) Handshake() error {
 	return nil
 }
 
-func (c *naiveConn) HandshakeContext(ctx context.Context) error {
-	headers, err := c.conn.WaitForHeadersContext(ctx)
-	if err != nil {
-		c.logger.WarnContext(c.ctx, "handshake failed: ", err)
-		return err
+func (c *naiveConn) ResponseHeader() http.Header {
+	header := c.conn.ResponseHeader()
+	if header == nil || c.conn.headers[":status"] != "200" {
+		return nil
 	}
-	if headers[":status"] != "200" {
-		err = E.New("unexpected response status: ", headers[":status"])
-		c.logger.WarnContext(c.ctx, "handshake failed: ", err)
-		return err
-	}
-	c.logger.DebugContext(c.ctx, "handshake succeeded")
-	return nil
+	return header
 }
 
 func (c *naiveConn) Read(p []byte) (n int, err error) {

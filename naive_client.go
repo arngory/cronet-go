@@ -7,9 +7,11 @@ import (
 	"encoding/base64"
 	"errors"
 	"net"
+	"net/http"
 	"net/url"
 	"os"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -549,7 +551,46 @@ func (c *NaiveClient) CloseAllConnections() {
 	}
 }
 
+// DialEarly opens a tunnel to destination and returns it at once, before the server answers: the first write goes
+// with the CONNECT. NaiveConn.Handshake waits for the answer.
 func (c *NaiveClient) DialEarly(ctx context.Context, destination M.Socksaddr) (NaiveConn, error) {
+	return c.dialEarly(ctx, destination, nil)
+}
+
+// DialEarlyWithHeaders is DialEarly with header added to the CONNECT of this one stream, inside TLS. The names that
+// the client sets itself (Proxy-Authorization, Padding and the other padding fields), pseudo-headers, names that start
+// with "-" (the library's own), and the connection-specific fields that HTTP/2 and HTTP/3 forbid are refused, as are
+// names and values that are not valid in HTTP. A field of ExtraHeaders with the same name is replaced; the values
+// of one name are joined with ", ". A refusal of the server is a *ConnectError from NaiveConn.Handshake.
+func (c *NaiveClient) DialEarlyWithHeaders(ctx context.Context, destination M.Socksaddr, header http.Header) (NaiveConn, error) {
+	streamHeaders, err := connectRequestHeaders(header)
+	if err != nil {
+		return nil, err
+	}
+	return c.dialEarly(ctx, destination, streamHeaders)
+}
+
+// DialContextWithHeaders opens a tunnel to destination with header added to its CONNECT, as DialEarlyWithHeaders
+// does, and waits for the answer of the server. On a 200 it returns the tunnel, whose ResponseHeader holds the fields
+// of the answer. On another status it returns a *ConnectError with the status and the fields, such as a 403 with
+// Niko-Refused, and closes the stream. network must be TCP.
+func (c *NaiveClient) DialContextWithHeaders(ctx context.Context, network string, destination M.Socksaddr, header http.Header) (NaiveConn, error) {
+	if N.NetworkName(network) != N.NetworkTCP {
+		return nil, os.ErrInvalid
+	}
+	conn, err := c.DialEarlyWithHeaders(ctx, destination, header)
+	if err != nil {
+		return nil, err
+	}
+	err = conn.HandshakeContext(ctx)
+	if err != nil {
+		conn.Close()
+		return nil, err
+	}
+	return conn, nil
+}
+
+func (c *NaiveClient) dialEarly(ctx context.Context, destination M.Socksaddr, streamHeaders map[string]string) (NaiveConn, error) {
 	state := clientState(c.state.Load())
 	switch state {
 	case clientStateRunning:
@@ -577,6 +618,15 @@ func (c *NaiveClient) DialEarly(ctx context.Context, destination M.Socksaddr) (N
 	}
 	for key, value := range c.extraHeaders {
 		headers[key] = value
+	}
+	// connectRequestHeaders refuses the names set above; one of ExtraHeaders is replaced, whatever its case
+	for name, value := range streamHeaders {
+		for key := range headers {
+			if strings.EqualFold(key, name) {
+				delete(headers, key)
+			}
+		}
+		headers[name] = value
 	}
 
 	streamEngine := c.streamEngines[0]

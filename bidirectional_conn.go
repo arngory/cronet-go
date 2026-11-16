@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"net"
+	"net/http"
 	"os"
 	"sync"
 	"time"
@@ -28,6 +29,7 @@ type BidirectionalConn struct {
 	read             chan int
 	write            chan struct{}
 	headers          map[string]string
+	responseHeader   http.Header
 	readSemaphore    chan struct{}
 	writeSemaphore   chan struct{}
 	readDone         chan struct{}
@@ -300,7 +302,7 @@ func (c *BidirectionalConn) WaitForHeaders() (map[string]string, error) {
 	case <-c.handshake:
 		return c.headers, nil
 	case <-c.done:
-		return nil, c.err
+		return c.headersAfterEnd(c.err)
 	case <-c.close:
 		return nil, net.ErrClosed
 	}
@@ -313,9 +315,36 @@ func (c *BidirectionalConn) WaitForHeadersContext(ctx context.Context) (map[stri
 	case <-c.handshake:
 		return c.headers, nil
 	case <-c.done:
-		return nil, c.err
+		return c.headersAfterEnd(c.err)
 	case <-c.close:
 		return nil, net.ErrClosed
+	}
+}
+
+// headersAfterEnd returns the response headers if they came before the stream ended, and err if not. A server that
+// refuses a CONNECT answers and may end the stream at once; whichever of the two the select above saw first, the
+// answer is what the caller waits for.
+func (c *BidirectionalConn) headersAfterEnd(err error) (map[string]string, error) {
+	select {
+	case <-c.handshake:
+		return c.headers, nil
+	default:
+		return nil, err
+	}
+}
+
+// ResponseHeader returns the header fields of the response, every value of each, pseudo-headers (":status") left
+// out, once the response headers have come (empty if there are none); nil before. The caller may change the returned
+// copy.
+func (c *BidirectionalConn) ResponseHeader() http.Header {
+	select {
+	case <-c.handshake:
+		if c.responseHeader == nil {
+			return http.Header{}
+		}
+		return c.responseHeader.Clone()
+	default:
+		return nil
 	}
 }
 
@@ -327,6 +356,11 @@ type bidirectionalHandler struct {
 
 func (c *bidirectionalHandler) OnStreamReady(stream BidirectionalStream) {
 	c.readyOnce.Do(func() { close(c.ready) })
+}
+
+// onResponseHeaderList is called just before OnResponseHeadersReceived, which publishes what it stores.
+func (c *bidirectionalHandler) onResponseHeaderList(header http.Header) {
+	c.responseHeader = header
 }
 
 func (c *bidirectionalHandler) OnResponseHeadersReceived(stream BidirectionalStream, headers map[string]string, negotiatedProtocol string) {

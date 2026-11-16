@@ -56,6 +56,8 @@ func cronetBidirectionalStreamOnResponseHeadersReceived(stream *C.bidirectional_
 	if callback == nil {
 		return
 	}
+	listReceiver, wantsList := callback.(responseHeaderListReceiver)
+	var headerList responseHeaderList
 	var headerMap map[string]string
 	if headers != nil && headers.count > 0 {
 		headerMap = make(map[string]string, int(headers.count))
@@ -65,8 +67,15 @@ func cronetBidirectionalStreamOnResponseHeadersReceived(stream *C.bidirectional_
 			if len(key) == 0 {
 				continue
 			}
-			headerMap[key] = C.GoString(header.value)
+			value := C.GoString(header.value)
+			headerMap[key] = value
+			if wantsList {
+				headerList.add(key, value)
+			}
 		}
+	}
+	if wantsList {
+		listReceiver.onResponseHeaderList(headerList.header)
 	}
 	callback.OnResponseHeadersReceived(cBidirectionalStreamToGo(stream), headerMap, C.GoString(negotiatedProtocol))
 }
