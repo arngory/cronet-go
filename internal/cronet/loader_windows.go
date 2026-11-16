@@ -902,6 +902,9 @@ func registerSymbols() error {
 		return err
 	}
 
+	// DatagramStream: optional, absent from libraries built before it
+	registerDatagramSymbols()
+
 	// Register float functions (platform-specific, see loader_windows_float*.go)
 	if err := registerFloatFuncs(); err != nil {
 		return err

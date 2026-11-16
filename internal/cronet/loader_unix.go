@@ -929,5 +929,8 @@ func registerSymbols() error {
 		return err
 	}
 
+	// DatagramStream: optional, absent from libraries built before it
+	registerDatagramSymbols()
+
 	return nil
 }
