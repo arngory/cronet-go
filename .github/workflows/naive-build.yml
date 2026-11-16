@@ -29,7 +29,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
-          go-version: ^1.25
+          go-version: ^1.26
       - name: Check formatting
         run: |
           unformatted=$(gofmt -l $(git ls-files '*.go'))
@@ -143,12 +143,24 @@ jobs:
           mv include/datagram_stream_c.h datagram_stream_c.h.saved
           cp include_cgo.go include_cgo.go.saved
           sed -i 's/ -DCRONET_GO_HAS_DATAGRAM_STREAM=1//' include_cgo.go
-          ! grep -q CRONET_GO_HAS_DATAGRAM_STREAM include_cgo.go
+          # Not "! grep": bash -e does not stop on a negated command.
+          if grep -q CRONET_GO_HAS_DATAGRAM_STREAM include_cgo.go; then
+            echo "include_cgo.go still has the define"
+            exit 1
+          fi
           status=0
           CGO_ENABLED=1 GOOS=linux GOARCH=${{ matrix.arch }} go -C test test -c -o ../cronet.nodatagram.test . || status=$?
           mv datagram_stream_c.h.saved include/datagram_stream_c.h
           mv include_cgo.go.saved include_cgo.go
           [ "$status" -eq 0 ]
+          # libcronet.a links datagram_stream_c.o only for a reference to it: none must come from the stub path.
+          nm cronet.test > cronet.test.nm
+          nm cronet.nodatagram.test > cronet.nodatagram.test.nm
+          grep -q ' T datagram_stream_create$' cronet.test.nm
+          if grep ' T datagram_stream_' cronet.nodatagram.test.nm; then
+            echo "the build without datagram streams references them"
+            exit 1
+          fi
           CRONET_TEST_NO_DATAGRAM_SUPPORT=1 ./cronet.nodatagram.test -test.v -test.run='TestDatagramUnsupportedLibrary|TestEngineVersion'
       - name: Build purego test binary
         run: |
@@ -544,7 +556,7 @@ jobs:
 
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
-          go-version: ^1.22
+          go-version: ^1.26
 
       - name: Download all artifacts
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
