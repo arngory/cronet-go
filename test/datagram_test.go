@@ -239,6 +239,7 @@ func datagramTestClient(t *testing.T, caPem string, port uint16) cronet.StreamEn
 	require.NoError(t, err)
 	require.NoError(t, client.Start())
 	t.Cleanup(func() { client.Close() })
+	_ = startNetLogForTest(t, client, t.Name()+"_netlog.json", false)
 	return client.Engine().StreamEngine()
 }
 
