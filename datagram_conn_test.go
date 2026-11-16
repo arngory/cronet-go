@@ -697,7 +697,11 @@ func TestDatagramConnConcurrentReaders(t *testing.T) {
 		}
 	}
 	stream.sync()
+	deadline := time.Now().Add(10 * time.Second)
 	for received.Load()+int64(conn.droppedReceive.Load()) < total {
+		if time.Now().After(deadline) {
+			t.Fatalf("received and dropped %d of %d", received.Load()+int64(conn.droppedReceive.Load()), total)
+		}
 		time.Sleep(time.Millisecond)
 	}
 	stream.closeStream()
@@ -762,4 +766,149 @@ func TestDatagramStreamWithoutLibrarySupport(t *testing.T) {
 		t.Fatal("a null stream answered")
 	}
 	stream.Cancel()
+}
+
+// TestDatagramConnErrBeforeDone: once Err is set, Done is closed.
+func TestDatagramConnErrBeforeDone(t *testing.T) {
+	violations := 0
+	for round := 0; round < 500; round++ {
+		conn, stream := newTestDatagramConn(t)
+		stream.ready(200, nil)
+		var seen atomic.Bool
+		stop := make(chan struct{})
+		var wg sync.WaitGroup
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				if conn.Err() != nil {
+					select {
+					case <-conn.Done():
+					default:
+						seen.Store(true)
+					}
+					return
+				}
+			}
+		}()
+		stream.fail(NetErrorConnectionReset)
+		waitDone(t, conn)
+		close(stop)
+		wg.Wait()
+		if seen.Load() {
+			violations++
+		}
+	}
+	if violations > 0 {
+		t.Errorf("Err was set while Done was open in %d rounds", violations)
+	}
+}
+
+// TestDatagramConnEndWakesWaiters: every end wakes a waiting ReadDatagram and WaitReady.
+func TestDatagramConnEndWakesWaiters(t *testing.T) {
+	ends := map[string]func(*DatagramConn, *fakeDatagramStream, context.CancelFunc){
+		"closed":        func(c *DatagramConn, s *fakeDatagramStream, _ context.CancelFunc) { s.closeStream() },
+		"failed":        func(c *DatagramConn, s *fakeDatagramStream, _ context.CancelFunc) { s.fail(NetErrorConnectionReset) },
+		"close":         func(c *DatagramConn, s *fakeDatagramStream, _ context.CancelFunc) { c.Close() },
+		"setup context": func(c *DatagramConn, s *fakeDatagramStream, cancel context.CancelFunc) { cancel() },
+	}
+	for name, end := range ends {
+		t.Run(name, func(t *testing.T) {
+			stream := newFakeDatagramStream(t)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			conn := newDatagramConn(ctx, stream.create, "https://example.org/", nil)
+			readErr := make(chan error, 1)
+			readyErr := make(chan error, 1)
+			go func() {
+				_, err := conn.ReadDatagram(context.Background(), make([]byte, 8))
+				readErr <- err
+			}()
+			go func() {
+				_, _, err := conn.WaitReady(context.Background())
+				readyErr <- err
+			}()
+			time.Sleep(10 * time.Millisecond)
+			end(conn, stream, cancel)
+			for _, errs := range []chan error{readErr, readyErr} {
+				select {
+				case err := <-errs:
+					if err == nil {
+						t.Error("woken without an error")
+					}
+				case <-time.After(5 * time.Second):
+					t.Fatal("a waiter was not woken")
+				}
+			}
+			waitDone(t, conn)
+		})
+	}
+}
+
+// TestDatagramConnChaos runs the callbacks, the end, Close, the setup context, writes and reads all at once.
+func TestDatagramConnChaos(t *testing.T) {
+	for round := 0; round < 300; round++ {
+		stream := newFakeDatagramStream(t)
+		ctx, cancel := context.WithCancel(context.Background())
+		conn := newDatagramConn(ctx, stream.create, "https://example.org/", nil)
+		var wg sync.WaitGroup
+		run := func(f func()) {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				f()
+			}()
+		}
+		run(func() { stream.ready(200, nil) })
+		run(func() {
+			for i := 0; i < 50; i++ {
+				stream.datagram([]byte{byte(i)})
+			}
+		})
+		run(func() {
+			switch round % 3 {
+			case 0:
+				stream.fail(NetErrorConnectionReset)
+			case 1:
+				stream.closeStream()
+			}
+		})
+		run(cancel)
+		run(func() { conn.Close() })
+		run(func() {
+			for i := 0; i < 50; i++ {
+				_ = conn.WriteDatagram([]byte{1})
+				_ = conn.MaxPayload()
+				_, _ = conn.Dropped()
+				_ = conn.Err()
+			}
+		})
+		run(func() {
+			buffer := make([]byte, 4)
+			for {
+				_, err := conn.ReadDatagram(context.Background(), buffer)
+				if err != nil && !errors.Is(err, ErrDatagramTruncated) {
+					return
+				}
+			}
+		})
+		wg.Wait()
+		waitDone(t, conn)
+		switch err := conn.Err(); {
+		case err == nil:
+			t.Fatal("no Err once Done")
+		case errors.Is(err, io.EOF), errors.Is(err, net.ErrClosed), errors.Is(err, context.Canceled),
+			errors.Is(err, NetErrorConnectionReset):
+		default:
+			t.Fatalf("Err = %v", err)
+		}
+		if _, destroys := stream.counts(); destroys != 1 {
+			t.Fatalf("destroyed %d times", destroys)
+		}
+	}
 }

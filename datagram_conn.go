@@ -155,11 +155,12 @@ func (c *DatagramConn) terminate(err error) {
 		}
 		c.destroyed = true
 		stopSetup := c.stopSetup
+		// Before Err() can return err: Done is closed when Err is set.
+		close(c.done)
 		c.access.Unlock()
 		if stopSetup != nil {
 			stopSetup()
 		}
-		close(c.done)
 	})
 }
 
