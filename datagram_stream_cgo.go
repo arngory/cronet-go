@@ -74,7 +74,9 @@ func (e StreamEngine) CreateDatagramStream(callback DatagramStreamCallback) Data
 }
 
 // Start sends the extended CONNECT request (the library sets :protocol connect-udp) to url with headers, as for
-// the tunnel of naive: authorization, Padding, -force-quic. False means the stream did not start.
+// the tunnel of naive: authorization, Padding, niko-udp. The library sets capsule-protocol if missing and forces
+// QUIC. False means the stream did not start: an invalid URL or header, a Cancel before Start, a second Start, or a
+// library without datagram support.
 func (s DatagramStream) Start(url string, headers map[string]string) bool {
 	if s.ptr == 0 {
 		return false
@@ -133,7 +135,9 @@ func (s DatagramStream) MaxPayload() int {
 	return int(C.datagram_stream_max_payload(s.c()))
 }
 
-// DroppedCapsules counts the capsules the library dropped after they waited 100 ms for the stream.
+// DroppedCapsules counts the datagrams the library dropped after Send took them: capsules that waited 100 ms for the
+// stream, capsules over a full queue or behind a write side the node stopped reading, and datagrams that no longer
+// fit in a QUIC datagram when capsules were not allowed. With purego on a 32-bit platform it wraps at 2^32.
 func (s DatagramStream) DroppedCapsules() uint64 {
 	if s.ptr == 0 {
 		return 0
@@ -141,7 +145,8 @@ func (s DatagramStream) DroppedCapsules() uint64 {
 	return uint64(C.datagram_stream_dropped_capsules(s.c()))
 }
 
-// Cancel cancels the stream. OnCanceled follows, unless the stream has already ended or has not started.
+// Cancel cancels the stream. Once Start has returned true, OnCanceled follows, also when the request was not sent
+// yet, unless the stream has already ended. A Cancel before Start makes Start fail, with no callback.
 func (s DatagramStream) Cancel() {
 	if s.ptr == 0 {
 		return

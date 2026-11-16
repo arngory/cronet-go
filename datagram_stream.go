@@ -83,7 +83,8 @@ func datagramSendError(result int) error {
 }
 
 // CheckDatagramSupport returns nil if the library has datagram streams, ErrDatagramUnsupported if it was built
-// without them, or the error of loading it (purego).
+// without them, or the error of loading it (purego). With purego it loads the library at the default place if none
+// is loaded, once for the process: call it after LoadLibrary with a path of your own, not before.
 func CheckDatagramSupport() error {
 	return checkDatagramSupport()
 }

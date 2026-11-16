@@ -288,8 +288,13 @@ func (c *DatagramConn) signalReadable() {
 }
 
 // WriteDatagram sends b, copied, without blocking; what does not fit in a QUIC datagram goes in a capsule
-// (naive-udp-v1 §4.4). It returns the errors of DatagramStream.Send, ErrDatagramClosed once the stream has ended (Err
-// tells why), net.ErrClosed after Close, and os.ErrDeadlineExceeded past the write deadline.
+// (naive-udp-v1 §4.4). Its errors:
+//   - ErrDatagramQueueFull, ErrDatagramCapsuleTimeout, ErrDatagramTooLarge: this one packet is lost, as UDP loses
+//     packets; a WriteTo over this conn must not end the socket on them.
+//   - ErrDatagramClosed: the stream has ended (Err tells why), or the node stopped reading it: the next packet opens
+//     a new stream.
+//   - net.ErrClosed: the caller closed the conn.
+//   - os.ErrDeadlineExceeded: past the write deadline.
 func (c *DatagramConn) WriteDatagram(b []byte) error {
 	select {
 	case <-c.closed:
