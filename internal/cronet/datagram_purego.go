@@ -17,8 +17,9 @@ var (
 	datagramStreamSupported bool
 )
 
-// registerDatagramSymbols registers all of the datagram stream functions, or none of them.
+// registerDatagramSymbols registers all of the datagram stream functions, or none of them, and records which.
 func registerDatagramSymbols() {
+	datagramStreamSupported = false
 	functions := []struct {
 		pointer any
 		name    string
