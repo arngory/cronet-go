@@ -30,7 +30,7 @@ func (e StreamEngine) CreateDatagramStream(callback DatagramStreamCallback) Data
 	if checkDatagramSupport() != nil {
 		return DatagramStream{}
 	}
-	ptr := cronet.DatagramStreamCreate(e.ptr, 0, uintptr(unsafe.Pointer(&datagramStreamCallbackPurego)))
+	ptr := cronet.DatagramStreamCreate(e.ptr, 0, unsafe.Pointer(&datagramStreamCallbackPurego))
 	if ptr == 0 {
 		return DatagramStream{}
 	}
@@ -48,10 +48,7 @@ func (s DatagramStream) Start(url string, headers map[string]string) bool {
 	}
 	headerLen := len(headers)
 	if headerLen == 0 {
-		var headerArray bidirectionalStreamHeaderArray
-		result := cronet.DatagramStreamStart(s.ptr, url, uintptr(unsafe.Pointer(&headerArray))) == 0
-		runtime.KeepAlive(&headerArray)
-		return result
+		return cronet.DatagramStreamStart(s.ptr, url, nil) == 0
 	}
 	cStringBacking := make([][]byte, 0, 2*headerLen)
 	headerStructs := make([]bidirectionalStreamHeader, headerLen)
@@ -69,7 +66,7 @@ func (s DatagramStream) Start(url string, headers map[string]string) bool {
 		capacity: uintptr(headerLen),
 		headers:  uintptr(unsafe.Pointer(&headerStructs[0])),
 	}
-	result := cronet.DatagramStreamStart(s.ptr, url, uintptr(unsafe.Pointer(&headerArray))) == 0
+	result := cronet.DatagramStreamStart(s.ptr, url, unsafe.Pointer(&headerArray)) == 0
 	runtime.KeepAlive(cStringBacking)
 	runtime.KeepAlive(headerStructs)
 	runtime.KeepAlive(&headerArray)
@@ -90,9 +87,9 @@ func (s DatagramStream) Send(data []byte, allowCapsule bool) error {
 	if allowCapsule {
 		flags = datagramStreamSendAllowCapsule
 	}
-	var dataPtr uintptr
+	var dataPtr unsafe.Pointer
 	if len(data) > 0 {
-		dataPtr = uintptr(unsafe.Pointer(&data[0]))
+		dataPtr = unsafe.Pointer(&data[0])
 	}
 	result := cronet.DatagramStreamSend(s.ptr, dataPtr, int32(len(data)), flags)
 	runtime.KeepAlive(data)

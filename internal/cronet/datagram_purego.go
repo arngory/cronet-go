@@ -2,12 +2,14 @@
 
 package cronet
 
+import "unsafe"
+
 // The datagram stream API (datagram_stream_c.h). Libraries built before it lack these symbols: they are looked up
 // apart from the others, and their absence leaves datagram streams unsupported instead of failing LoadLibrary.
 var (
-	datagramStreamCreate          func(uintptr, uintptr, uintptr) uintptr
-	datagramStreamStart           func(uintptr, string, uintptr) int32
-	datagramStreamSend            func(uintptr, uintptr, int32, int32) int32
+	datagramStreamCreate          func(uintptr, uintptr, unsafe.Pointer) uintptr
+	datagramStreamStart           func(uintptr, string, unsafe.Pointer) int32
+	datagramStreamSend            func(uintptr, unsafe.Pointer, int32, int32) int32
 	datagramStreamMaxPayload      func(uintptr) int32
 	datagramStreamDroppedCapsules func(uintptr) uint64
 	datagramStreamCancel          func(uintptr)
@@ -53,17 +55,18 @@ func DatagramStreamSupported() (bool, error) {
 	return datagramStreamSupported, nil
 }
 
-// DatagramStream API: callers check DatagramStreamSupported first.
+// DatagramStream API: callers check DatagramStreamSupported first. Go memory goes to C as a pointer, not as a
+// uintptr, so that it is kept where it is for the call.
 
-func DatagramStreamCreate(engine, annotation, callback uintptr) uintptr {
+func DatagramStreamCreate(engine, annotation uintptr, callback unsafe.Pointer) uintptr {
 	return datagramStreamCreate(engine, annotation, callback)
 }
 
-func DatagramStreamStart(stream uintptr, url string, headers uintptr) int32 {
+func DatagramStreamStart(stream uintptr, url string, headers unsafe.Pointer) int32 {
 	return datagramStreamStart(stream, url, headers)
 }
 
-func DatagramStreamSend(stream, data uintptr, length, flags int32) int32 {
+func DatagramStreamSend(stream uintptr, data unsafe.Pointer, length, flags int32) int32 {
 	return datagramStreamSend(stream, data, length, flags)
 }
 
