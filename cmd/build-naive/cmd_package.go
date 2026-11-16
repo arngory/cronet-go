@@ -111,14 +111,21 @@ func packageTargets(targets []Target) {
 	log.Print("Package complete!")
 }
 
+// generateCGOConfig writes include_cgo.go. With datagram_stream_c.h in include/, it defines
+// CRONET_GO_HAS_DATAGRAM_STREAM, on which datagram_stream_cgo.h takes the real functions instead of its stubs: the Go
+// build cache keys on this file, not on what include/ holds.
 func generateCGOConfig() {
-	content := `//go:build !with_purego
+	cflags := "-I${SRCDIR}/include"
+	if _, err := os.Stat(filepath.Join(projectRoot, "include", "datagram_stream_c.h")); err == nil {
+		cflags += " -DCRONET_GO_HAS_DATAGRAM_STREAM=1"
+	}
+	content := fmt.Sprintf(`//go:build !with_purego
 
 package cronet
 
-// #cgo CFLAGS: -I${SRCDIR}/include
+// #cgo CFLAGS: %s
 import "C"
-`
+`, cflags)
 	path := filepath.Join(projectRoot, "include_cgo.go")
 	err := os.WriteFile(path, []byte(content), 0o644)
 	if err != nil {

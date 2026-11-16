@@ -134,6 +134,22 @@ jobs:
           CGO_ENABLED=1 GOOS=linux GOARCH=${{ matrix.arch }} go -C test test -c -o ../cronet.test .
       - name: Run test binary
         run: ./cronet.test -test.v -test.run=TestEngineVersion
+      # The cgo build of a library without datagram streams: include/ without datagram_stream_c.h, include_cgo.go
+      # without the define that goes with it. It must build and link, and report no datagram support.
+      - name: Build and run test binary without datagram streams
+        run: |
+          eval $(go run ./cmd/build-naive --target=linux/${{ matrix.arch }} env --export)
+          grep -q -- '-DCRONET_GO_HAS_DATAGRAM_STREAM=1' include_cgo.go
+          mv include/datagram_stream_c.h datagram_stream_c.h.saved
+          cp include_cgo.go include_cgo.go.saved
+          sed -i 's/ -DCRONET_GO_HAS_DATAGRAM_STREAM=1//' include_cgo.go
+          ! grep -q CRONET_GO_HAS_DATAGRAM_STREAM include_cgo.go
+          status=0
+          CGO_ENABLED=1 GOOS=linux GOARCH=${{ matrix.arch }} go -C test test -c -o ../cronet.nodatagram.test . || status=$?
+          mv datagram_stream_c.h.saved include/datagram_stream_c.h
+          mv include_cgo.go.saved include_cgo.go
+          [ "$status" -eq 0 ]
+          CRONET_TEST_NO_DATAGRAM_SUPPORT=1 ./cronet.nodatagram.test -test.v -test.run='TestDatagramUnsupportedLibrary|TestEngineVersion'
       - name: Build purego test binary
         run: |
           cp lib/linux_${{ matrix.arch }}/libcronet.so .

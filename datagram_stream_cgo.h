@@ -1,10 +1,17 @@
 // The datagram stream API of libcronet for the cgo build.
 //
 // The headers in include/ and the libraries in lib/ are copied from one build of
-// naiveproxy and published together. A build that has datagram_stream_c.h has
-// the datagram_stream_* functions in its libraries; one that predates them has
-// neither, and gets the declarations below, which report no datagram support,
-// instead of an undefined symbol at link time.
+// naiveproxy and published together. The package step that copies
+// datagram_stream_c.h also defines CRONET_GO_HAS_DATAGRAM_STREAM in
+// include_cgo.go, and the libraries of that build have the datagram_stream_*
+// functions. Without the define, the declarations below stand in for them and
+// report no datagram support, instead of an undefined symbol at link time. The
+// define is keyed in a Go file, not on the presence of the header, because the
+// Go build cache tracks the Go files of the package, not include/.
+//
+// The root module and the lib/<target> modules must come from the same
+// publish: a root module with the define and a lib module built before the
+// datagram streams fail to link (undefined datagram_stream_*).
 
 #ifndef CRONET_GO_DATAGRAM_STREAM_CGO_H_
 #define CRONET_GO_DATAGRAM_STREAM_CGO_H_
@@ -14,12 +21,6 @@
 #include <stdlib.h>
 
 #include <bidirectional_stream_c.h>
-
-#if defined(__has_include)
-#if __has_include(<datagram_stream_c.h>)
-#define CRONET_GO_HAS_DATAGRAM_STREAM 1
-#endif
-#endif
 
 #if defined(CRONET_GO_HAS_DATAGRAM_STREAM)
 

@@ -895,3 +895,35 @@ func TestDatagramConnConcurrentWritersClose(t *testing.T) {
 		}
 	}
 }
+
+// TestDatagramUnsupportedLibrary runs against a build without datagram streams: the workflow builds the test binary
+// for it from include/ without datagram_stream_c.h and without the define that goes with it, and sets
+// CRONET_TEST_NO_DATAGRAM_SUPPORT=1. Everything else works; datagram streams report ErrDatagramUnsupported.
+func TestDatagramUnsupportedLibrary(t *testing.T) {
+	if os.Getenv("CRONET_TEST_NO_DATAGRAM_SUPPORT") != "1" {
+		t.Skip("for a build without datagram streams")
+	}
+	require.ErrorIs(t, cronet.CheckDatagramSupport(), cronet.ErrDatagramUnsupported)
+	caPem, certPem, keyPem := generateCertificate(t, "example.org")
+	server := startUDPEchoServer(t, certPem, keyPem, true)
+	engine := datagramTestClient(t, caPem, server.port)
+
+	conn := engine.CreateDatagramConn(context.Background(), server.url(), datagramRequestHeaders(true))
+	select {
+	case <-conn.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("the conn did not end")
+	}
+	require.ErrorIs(t, conn.Err(), cronet.ErrDatagramUnsupported)
+	_, _, err := conn.WaitReady(context.Background())
+	require.ErrorIs(t, err, cronet.ErrDatagramUnsupported)
+	require.ErrorIs(t, conn.WriteDatagram(udpPayload([]byte("x"))), cronet.ErrDatagramClosed)
+	require.NoError(t, conn.Close())
+
+	stream := engine.CreateDatagramStream(newDatagramStreamRecorder())
+	require.False(t, stream.Start(server.url(), datagramRequestHeaders(true)))
+	require.ErrorIs(t, stream.Send(udpPayload([]byte("x")), true), cronet.ErrDatagramUnsupported)
+	require.Zero(t, stream.MaxPayload())
+	require.False(t, stream.Destroy())
+	require.Zero(t, server.requests.Load())
+}
