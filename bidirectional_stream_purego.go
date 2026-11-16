@@ -18,7 +18,7 @@ func (e StreamEngine) CreateStream(callback BidirectionalStreamCallback) Bidirec
 	if callback == nil {
 		panic("nil bidirectional stream callback")
 	}
-	ptr := cronet.BidirectionalStreamCreate(e.ptr, 0, uintptr(unsafe.Pointer(&bsCallbackStructPurego)))
+	ptr := cronet.BidirectionalStreamCreate(e.ptr, 0, unsafe.Pointer(&bsCallbackStructPurego))
 	bidirectionalStreamAccess.Lock()
 	bidirectionalStreamMap[ptr] = &bidirectionalStreamEntry{callback: callback}
 	bidirectionalStreamAccess.Unlock()
@@ -40,7 +40,6 @@ func (s BidirectionalStream) Destroy() bool {
 
 // Start starts the stream by sending request to |url| using |method| and |headers|.
 func (c BidirectionalStream) Start(method string, url string, headers map[string]string, priority int, endOfStream bool) bool {
-	var headerArrayPtr uintptr
 	var cStringBacking [][]byte // Keep C string backing slices alive
 
 	headerLen := len(headers)
@@ -62,9 +61,7 @@ func (c BidirectionalStream) Start(method string, url string, headers map[string
 			capacity: uintptr(headerLen),
 			headers:  uintptr(unsafe.Pointer(&headerStructs[0])),
 		}
-		headerArrayPtr = uintptr(unsafe.Pointer(&headerArray))
-
-		result := cronet.BidirectionalStreamStart(c.ptr, url, int32(priority), method, headerArrayPtr, endOfStream) == 0
+		result := cronet.BidirectionalStreamStart(c.ptr, url, int32(priority), method, unsafe.Pointer(&headerArray), endOfStream) == 0
 
 		// Keep all backing slices alive until after the call
 		runtime.KeepAlive(cStringBacking)
@@ -74,7 +71,7 @@ func (c BidirectionalStream) Start(method string, url string, headers map[string
 		return result
 	}
 
-	return cronet.BidirectionalStreamStart(c.ptr, url, int32(priority), method, 0, endOfStream) == 0
+	return cronet.BidirectionalStreamStart(c.ptr, url, int32(priority), method, nil, endOfStream) == 0
 }
 
 func (s BidirectionalStream) DisableAutoFlush(disable bool) {
@@ -87,16 +84,16 @@ func (s BidirectionalStream) DelayRequestHeadersUntilFlush(delay bool) {
 
 func (s BidirectionalStream) Read(buffer []byte) int {
 	if len(buffer) == 0 {
-		return int(cronet.BidirectionalStreamRead(s.ptr, 0, 0))
+		return int(cronet.BidirectionalStreamRead(s.ptr, nil, 0))
 	}
-	return int(cronet.BidirectionalStreamRead(s.ptr, uintptr(unsafe.Pointer(&buffer[0])), int32(len(buffer))))
+	return int(cronet.BidirectionalStreamRead(s.ptr, unsafe.Pointer(&buffer[0]), int32(len(buffer))))
 }
 
 func (s BidirectionalStream) Write(buffer []byte, endOfStream bool) int {
 	if len(buffer) == 0 {
-		return int(cronet.BidirectionalStreamWrite(s.ptr, 0, 0, endOfStream))
+		return int(cronet.BidirectionalStreamWrite(s.ptr, nil, 0, endOfStream))
 	}
-	return int(cronet.BidirectionalStreamWrite(s.ptr, uintptr(unsafe.Pointer(&buffer[0])), int32(len(buffer)), endOfStream))
+	return int(cronet.BidirectionalStreamWrite(s.ptr, unsafe.Pointer(&buffer[0]), int32(len(buffer)), endOfStream))
 }
 
 func (s BidirectionalStream) Flush() {

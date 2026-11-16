@@ -995,7 +995,7 @@ func RequestFinishedInfoListenerCreateWith(onRequestFinished uintptr) uintptr {
 
 // BidirectionalStream API
 
-func BidirectionalStreamCreate(engine, annotation, callback uintptr) uintptr {
+func BidirectionalStreamCreate(engine, annotation uintptr, callback unsafe.Pointer) uintptr {
 	ensureLoaded()
 	return bidirectionalStreamCreate(engine, annotation, callback)
 }
@@ -1012,15 +1012,17 @@ func BidirectionalStreamDelayRequestHeadersUntilFlush(stream uintptr, delay bool
 	bidirectionalStreamDelayRequestHeadersUntilFlush(stream, delay)
 }
 
-func BidirectionalStreamStart(stream uintptr, url string, priority int32, method string, headers uintptr, endOfStream bool) int32 {
+func BidirectionalStreamStart(stream uintptr, url string, priority int32, method string, headers unsafe.Pointer, endOfStream bool) int32 {
 	return bidirectionalStreamStart(stream, url, priority, method, headers, endOfStream)
 }
 
-func BidirectionalStreamRead(stream, buffer uintptr, capacity int32) int32 {
+// Go memory goes to C as a pointer, not as a uintptr, so that it is kept where it is: C holds a read buffer until
+// the read completes.
+func BidirectionalStreamRead(stream uintptr, buffer unsafe.Pointer, capacity int32) int32 {
 	return bidirectionalStreamRead(stream, buffer, capacity)
 }
 
-func BidirectionalStreamWrite(stream, buffer uintptr, count int32, endOfStream bool) int32 {
+func BidirectionalStreamWrite(stream uintptr, buffer unsafe.Pointer, count int32, endOfStream bool) int32 {
 	return bidirectionalStreamWrite(stream, buffer, count, endOfStream)
 }
 

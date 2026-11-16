@@ -301,13 +301,13 @@ var (
 
 // BidirectionalStream API function pointers
 var (
-	bidirectionalStreamCreate                        func(uintptr, uintptr, uintptr) uintptr
+	bidirectionalStreamCreate                        func(uintptr, uintptr, unsafe.Pointer) uintptr
 	bidirectionalStreamDestroy                       func(uintptr) int32
 	bidirectionalStreamDisableAutoFlush              func(uintptr, bool)
 	bidirectionalStreamDelayRequestHeadersUntilFlush func(uintptr, bool)
-	bidirectionalStreamStart                         func(uintptr, string, int32, string, uintptr, bool) int32
-	bidirectionalStreamRead                          func(uintptr, uintptr, int32) int32
-	bidirectionalStreamWrite                         func(uintptr, uintptr, int32, bool) int32
+	bidirectionalStreamStart                         func(uintptr, string, int32, string, unsafe.Pointer, bool) int32
+	bidirectionalStreamRead                          func(uintptr, unsafe.Pointer, int32) int32
+	bidirectionalStreamWrite                         func(uintptr, unsafe.Pointer, int32, bool) int32
 	bidirectionalStreamFlush                         func(uintptr)
 	bidirectionalStreamCancel                        func(uintptr)
 )
