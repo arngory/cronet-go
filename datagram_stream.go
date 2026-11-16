@@ -40,7 +40,8 @@ type DatagramStreamCallback interface {
 
 // The results of DatagramStream.Send other than success. ErrDatagramQueueFull, ErrDatagramTooLarge and
 // ErrDatagramClosed concern the datagram passed to the call; ErrDatagramCapsuleTimeout is returned for a datagram
-// that needs a capsule while the oldest capsule waiting for the stream has waited longer than 100 ms.
+// that needs a capsule while the oldest capsule not yet sent, in the send buffer of the stream or queued for it, has
+// waited longer than 100 ms. A datagram that fits in a QUIC datagram is never held up by capsules.
 var (
 	ErrDatagramQueueFull      = errors.New("cronet: datagram queue full")
 	ErrDatagramTooLarge       = errors.New("cronet: datagram too large")

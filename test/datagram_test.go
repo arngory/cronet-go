@@ -137,6 +137,11 @@ func (s *udpEchoServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("niko-udp", "1")
 	w.WriteHeader(http.StatusOK)
 	stream := w.(http3.HTTPStreamer).HTTPStream()
+	if r.Header.Get("x-test-stall") == "1" {
+		// Reads nothing: the stream of the client stalls once the flow control window is full.
+		<-r.Context().Done()
+		return
+	}
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 
@@ -490,4 +495,54 @@ func TestDatagramStreamWithoutH3Datagram(t *testing.T) {
 	var netError cronet.NetError
 	require.True(t, errors.As(err, &netError))
 	require.Zero(t, server.requests.Load(), "the request was sent")
+}
+
+// TestDatagramStreamCapsuleTimeout stalls the stream on the server, which reads nothing: once the flow control
+// window is full, a capsule waits in the send buffer, and after 100 ms a send that needs a capsule is refused,
+// while one that fits in a QUIC datagram is not; the capsules queued behind it are dropped and counted.
+func TestDatagramStreamCapsuleTimeout(t *testing.T) {
+	require.NoError(t, cronet.CheckDatagramSupport())
+	caPem, certPem, keyPem := generateCertificate(t, "example.org")
+	server := startUDPEchoServer(t, certPem, keyPem, true)
+	engine := datagramTestClient(t, caPem, server.port)
+
+	recorder := newDatagramStreamRecorder()
+	stream := engine.CreateDatagramStream(recorder)
+	headers := datagramRequestHeaders(true)
+	headers["x-test-stall"] = "1"
+	require.True(t, stream.Start(server.url(), headers))
+	defer stream.Destroy()
+	require.Equal(t, 200, receiveWithin(t, recorder.ready, "response"))
+
+	capsule := udpPayload(make([]byte, 60000))
+	deadline := time.Now().Add(20 * time.Second)
+	var accepted, queueFull int
+	for {
+		err := stream.Send(capsule, true)
+		if errors.Is(err, cronet.ErrDatagramCapsuleTimeout) {
+			break
+		}
+		if err == nil {
+			accepted++
+		} else {
+			require.ErrorIs(t, err, cronet.ErrDatagramQueueFull)
+			queueFull++
+		}
+		require.True(t, time.Now().Before(deadline), "no capsule timeout after %d capsules", accepted)
+		time.Sleep(2 * time.Millisecond)
+	}
+	t.Logf("capsule timeout after %d capsules accepted, %d refused as queue full", accepted, queueFull)
+
+	// A datagram that fits is not held up by the capsules.
+	small := udpPayload([]byte("small"))
+	require.NoError(t, stream.Send(small, false))
+	require.NoError(t, stream.Send(small, true))
+	require.ErrorIs(t, stream.Send(capsule, true), cronet.ErrDatagramCapsuleTimeout)
+
+	require.Eventually(t, func() bool { return stream.DroppedCapsules() > 0 }, 5*time.Second, 10*time.Millisecond,
+		"the stale capsules were not dropped")
+	t.Logf("dropped capsules %d", stream.DroppedCapsules())
+
+	stream.Cancel()
+	require.Equal(t, "canceled", receiveWithin(t, recorder.end, "end"))
 }
