@@ -291,8 +291,9 @@ func (c *DatagramConn) signalReadable() {
 // (naive-udp-v1 §4.4). Its errors:
 //   - ErrDatagramQueueFull, ErrDatagramCapsuleTimeout, ErrDatagramTooLarge: this one packet is lost, as UDP loses
 //     packets; a WriteTo over this conn must not end the socket on them.
-//   - ErrDatagramClosed: the stream has ended (Err tells why), or the node stopped reading it: the next packet opens
-//     a new stream.
+//   - ErrDatagramClosed: the stream has ended (Err tells why), or the node stopped reading it. After a STOP_SENDING
+//     alone the stream is still up: Done stays open and reads go on, so the caller should Close this conn and open a
+//     new one for the next packet, or it lingers until the node ends the stream.
 //   - net.ErrClosed: the caller closed the conn.
 //   - os.ErrDeadlineExceeded: past the write deadline.
 func (c *DatagramConn) WriteDatagram(b []byte) error {
