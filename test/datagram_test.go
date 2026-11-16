@@ -35,13 +35,16 @@ const (
 	datagramCapsuleType = http3.CapsuleType(0)
 	datagramPath        = "/.well-known/masque/udp/%2A/%2A/"
 	// The commands of the echo server, in the UDP data of a datagram: close the stream cleanly (FIN), close it as
-	// quic-go and the node do when they end a stream (STOP_SENDING and FIN), reset it, send N capsules at once, send
-	// a datagram with another Context ID and then "ctx2".
-	datagramCloseData     = "close"
-	datagramCloseStopData = "close-stop"
-	datagramResetData     = "reset"
-	datagramBurstPrefix   = "burst-capsules "
-	datagramWrongContext  = "wrong-context"
+	// quic-go and the node do when they end a stream (STOP_SENDING with H3_NO_ERROR, and FIN), end it with FIN but
+	// an error (a capsule cut short; STOP_SENDING with H3_REQUEST_CANCELLED), reset it, send N capsules at once,
+	// send a datagram with another Context ID and then "ctx2".
+	datagramCloseData          = "close"
+	datagramCloseStopData      = "close-stop"
+	datagramCloseTruncatedData = "close-truncated"
+	datagramCloseCanceledData  = "close-canceled"
+	datagramResetData          = "reset"
+	datagramBurstPrefix        = "burst-capsules "
+	datagramWrongContext       = "wrong-context"
 	// The command of the server that reads nothing (datagramStallHeader), in a QUIC datagram: stop reading the
 	// stream with STOP_SENDING alone, then send datagramStoppedData in a datagram.
 	datagramStopReadingData = "stop-reading"
@@ -49,7 +52,9 @@ const (
 )
 
 // The request headers of the echo server's modes: answer nothing; send datagrams and capsules without end; answer
-// with a capsule and the end of the stream at once ("fin", or "stop" for STOP_SENDING and FIN); read nothing.
+// with a capsule and the end of the stream at once ("fin"; "stop" for STOP_SENDING with H3_NO_ERROR and FIN;
+// "canceled" for STOP_SENDING with H3_REQUEST_CANCELLED and FIN; "truncated" for the capsule cut short and FIN);
+// read nothing.
 const (
 	datagramHoldHeader        = "x-test-hold"
 	datagramFloodHeader       = "x-test-flood"
@@ -174,16 +179,23 @@ func (s *udpEchoServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("niko-udp", "1")
 	w.WriteHeader(http.StatusOK)
 	stream := w.(http3.HTTPStreamer).HTTPStream()
-	switch r.Header.Get(datagramAnswerCloseHeader) {
-	case "fin", "stop":
+	switch mode := r.Header.Get(datagramAnswerCloseHeader); mode {
+	case "fin", "stop", "canceled", "truncated":
 		// The answer, a capsule and the end, in one go.
-		if r.Header.Get(datagramAnswerCloseHeader) == "stop" {
+		switch mode {
+		case "stop":
 			stream.CancelRead(quic.StreamErrorCode(http3.ErrCodeNoError))
+		case "canceled":
+			stream.CancelRead(quic.StreamErrorCode(http3.ErrCodeRequestCanceled))
 		}
 		var capsule bytes.Buffer
 		_ = http3.WriteCapsule(&capsule, datagramCapsuleType,
 			append([]byte{datagramContextID}, udpPayload([]byte(datagramAnswerCloseData))...))
-		_, _ = stream.Write(capsule.Bytes())
+		data := capsule.Bytes()
+		if mode == "truncated" {
+			data = data[:len(data)-1]
+		}
+		_, _ = stream.Write(data)
 		stream.Close()
 		<-r.Context().Done()
 		return
@@ -253,6 +265,20 @@ func (s *udpEchoServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		case string(data) == datagramCloseStopData:
 			// A clean close as quic-go and the node make it: STOP_SENDING and FIN.
 			stream.CancelRead(quic.StreamErrorCode(http3.ErrCodeNoError))
+			stream.Close()
+			cancel()
+			return
+		case string(data) == datagramCloseTruncatedData:
+			// FIN in the middle of a capsule.
+			var capsule bytes.Buffer
+			_ = http3.WriteCapsule(&capsule, datagramCapsuleType,
+				append([]byte{datagramContextID}, udpPayload([]byte("cut short"))...))
+			_, _ = stream.Write(capsule.Bytes()[:capsule.Len()-1])
+			stream.Close()
+			cancel()
+			return
+		case string(data) == datagramCloseCanceledData:
+			stream.CancelRead(quic.StreamErrorCode(http3.ErrCodeRequestCanceled))
 			stream.Close()
 			cancel()
 			return
@@ -777,6 +803,33 @@ func TestDatagramStreamCloseWithStopSending(t *testing.T) {
 	require.ErrorIs(t, conn.Err(), io.EOF)
 }
 
+// TestDatagramStreamCloseWithError: the node ends the stream with FIN, but with an error: a capsule cut short (the
+// client resets the stream with QUIC_BAD_APPLICATION_PAYLOAD), or STOP_SENDING with H3_REQUEST_CANCELLED. A failure,
+// not the clean end of TestDatagramStreamCloseWithStopSending.
+func TestDatagramStreamCloseWithError(t *testing.T) {
+	require.NoError(t, cronet.CheckDatagramSupport())
+	caPem, certPem, keyPem := generateCertificate(t, "example.org")
+	server := startUDPEchoServer(t, certPem, keyPem, true)
+	engine := datagramTestClient(t, caPem, server.port)
+
+	for _, command := range []string{datagramCloseTruncatedData, datagramCloseCanceledData} {
+		t.Run(command, func(t *testing.T) {
+			conn := engine.CreateDatagramConn(context.Background(), server.url(), datagramRequestHeaders(true))
+			defer conn.Close()
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			_, _, err := conn.WaitReady(ctx)
+			require.NoError(t, err)
+			require.NoError(t, conn.WriteDatagram(udpPayload([]byte(command))))
+			_, err = conn.ReadDatagram(ctx, make([]byte, 64))
+			var netError cronet.NetError
+			require.True(t, errors.As(err, &netError), "read after %s = %v", command, err)
+			require.ErrorAs(t, conn.Err(), &netError)
+			t.Logf("%s: %v (%s)", command, netError, netError.Name())
+		})
+	}
+}
+
 // TestDatagramStreamServerReset: the node resets the stream after 200: a failure.
 func TestDatagramStreamServerReset(t *testing.T) {
 	require.NoError(t, cronet.CheckDatagramSupport())
@@ -798,17 +851,27 @@ func TestDatagramStreamServerReset(t *testing.T) {
 }
 
 // TestDatagramStreamAnswerWithEnd: the answer, a datagram and the end of the stream come together; the datagram is
-// read before the end.
+// read before the end. The end is clean with FIN, alone or after STOP_SENDING with H3_NO_ERROR, and a failure after
+// STOP_SENDING with H3_REQUEST_CANCELLED, or with the capsule cut short (then there is no datagram).
 func TestDatagramStreamAnswerWithEnd(t *testing.T) {
 	require.NoError(t, cronet.CheckDatagramSupport())
 	caPem, certPem, keyPem := generateCertificate(t, "example.org")
 	server := startUDPEchoServer(t, certPem, keyPem, true)
 	engine := datagramTestClient(t, caPem, server.port)
 
-	for _, mode := range []string{"fin", "stop"} {
-		t.Run(mode, func(t *testing.T) {
+	for _, test := range []struct {
+		mode     string
+		datagram bool
+		clean    bool
+	}{
+		{mode: "fin", datagram: true, clean: true},
+		{mode: "stop", datagram: true, clean: true},
+		{mode: "canceled", datagram: true},
+		{mode: "truncated"},
+	} {
+		t.Run(test.mode, func(t *testing.T) {
 			headers := datagramRequestHeaders(true)
-			headers[datagramAnswerCloseHeader] = mode
+			headers[datagramAnswerCloseHeader] = test.mode
 			conn := engine.CreateDatagramConn(context.Background(), server.url(), headers)
 			defer conn.Close()
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -817,11 +880,19 @@ func TestDatagramStreamAnswerWithEnd(t *testing.T) {
 			require.NoError(t, err)
 			require.Equal(t, 200, status)
 			buffer := make([]byte, 128)
-			n, err := conn.ReadDatagram(ctx, buffer)
-			require.NoError(t, err)
-			require.Equal(t, udpPayload([]byte(datagramAnswerCloseData)), buffer[:n])
+			if test.datagram {
+				n, err := conn.ReadDatagram(ctx, buffer)
+				require.NoError(t, err)
+				require.Equal(t, udpPayload([]byte(datagramAnswerCloseData)), buffer[:n])
+			}
 			_, err = conn.ReadDatagram(ctx, buffer)
-			require.ErrorIs(t, err, io.EOF)
+			if test.clean {
+				require.ErrorIs(t, err, io.EOF)
+				return
+			}
+			var netError cronet.NetError
+			require.True(t, errors.As(err, &netError), "read after the end = %v", err)
+			t.Logf("%s: %v (%s)", test.mode, netError, netError.Name())
 		})
 	}
 }
