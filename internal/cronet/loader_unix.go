@@ -932,5 +932,8 @@ func registerSymbols() error {
 	// DatagramStream: optional, absent from libraries built before it
 	registerDatagramSymbols()
 
+	// Exact server certificates of EngineParams: optional, absent from libraries built before them
+	registerExactServerCertificateSymbols()
+
 	return nil
 }

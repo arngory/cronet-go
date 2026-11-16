@@ -3,6 +3,7 @@ package cronet
 import (
 	"context"
 	"crypto/sha256"
+	"crypto/x509"
 	"encoding/base64"
 	"errors"
 	"net"
@@ -61,6 +62,7 @@ type NaiveClient struct {
 	receiveWindow           uint64
 	trustedRootCertificates string
 	publicKeyPins           [][]byte
+	exactCertificates       [][]byte
 	dnsResolver             DNSResolverFunc
 	echEnabled              bool
 	echConfigList           []byte
@@ -114,6 +116,15 @@ type NaiveClientOptions struct {
 	// It is checked besides the chain, not in place of it, and for certificates of TrustedRootCertificates too.
 	// ServerName must be a host name: Chromium keeps no pins for an address.
 	CertificatePublicKeySHA256 [][]byte
+	// ExactServerCertificates, if not empty, are the only certificates the client trusts, each the DER encoding of an
+	// X.509 certificate: the server must present one of them, byte for byte, as its leaf certificate. Nothing else is
+	// checked: not ServerName or the address, the chain, the validity period, a root store, revocation or Certificate
+	// Transparency. The TLS handshake still proves that the server holds the key of the certificate. That is what a
+	// server reached by IP address with a self-signed certificate needs; use it only with certificates you distribute
+	// yourself, and list the current one and the next to rotate without a gap. It applies to HTTP/2 and QUIC alike;
+	// another certificate fails the handshake (NetErrorCertAuthorityInvalid over HTTP/2). It cannot be combined with
+	// TrustedRootCertificates or CertificatePublicKeySHA256: it replaces the roots, and fixes the key already.
+	ExactServerCertificates [][]byte
 }
 
 // publicKeyPinLifetime is how long the engine keeps the pins of a client: longer than any process lives. A pin
@@ -145,6 +156,24 @@ func NewNaiveClient(config NaiveClientOptions) (*NaiveClient, error) {
 			if len(hash) != sha256.Size {
 				return nil, E.New("invalid public key pin: ", len(hash), " bytes, a SHA-256 hash is ", sha256.Size)
 			}
+		}
+	}
+
+	if len(config.ExactServerCertificates) > 0 {
+		if config.TrustedRootCertificates != "" {
+			return nil, E.New("exact server certificates replace the trusted root certificates: set one of them")
+		}
+		if len(config.CertificatePublicKeySHA256) > 0 {
+			return nil, E.New("exact server certificates fix the key already: set them or public key pins")
+		}
+		for index, certificate := range config.ExactServerCertificates {
+			if _, err := x509.ParseCertificate(certificate); err != nil {
+				return nil, E.Cause(err, "exact server certificate ", index)
+			}
+		}
+		err = CheckExactServerCertificatesSupport()
+		if err != nil {
+			return nil, err
 		}
 	}
 
@@ -191,6 +220,7 @@ func NewNaiveClient(config NaiveClientOptions) (*NaiveClient, error) {
 		concurrency:              concurrency,
 		trustedRootCertificates:  config.TrustedRootCertificates,
 		publicKeyPins:            config.CertificatePublicKeySHA256,
+		exactCertificates:        config.ExactServerCertificates,
 		dnsResolver:              config.DNSResolver,
 		echEnabled:               config.ECHEnabled,
 		echConfigList:            config.ECHConfigList,
@@ -436,7 +466,11 @@ func (c *NaiveClient) startEngine(tcpDialer Dialer, udpDialer UDPDialer, dnsServ
 		params.SetEnablePublicKeyPinningBypassForLocalTrustAnchors(false)
 	}
 
-	paramsError := params.SetAsyncDNS(true)
+	// the parameters take a copy; with none, the default verification
+	paramsError := params.SetExactServerCertificates(c.exactCertificates)
+	if paramsError == nil {
+		paramsError = params.SetAsyncDNS(true)
+	}
 	if paramsError == nil {
 		paramsError = params.SetDNSServerOverride([]string{dnsServerAddress.String()})
 	}

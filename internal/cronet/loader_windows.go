@@ -905,6 +905,9 @@ func registerSymbols() error {
 	// DatagramStream: optional, absent from libraries built before it
 	registerDatagramSymbols()
 
+	// Exact server certificates of EngineParams: optional, absent from libraries built before them
+	registerExactServerCertificateSymbols()
+
 	// Register float functions (platform-specific, see loader_windows_float*.go)
 	if err := registerFloatFuncs(); err != nil {
 		return err

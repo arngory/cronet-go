@@ -112,12 +112,20 @@ func packageTargets(targets []Target) {
 }
 
 // generateCGOConfig writes include_cgo.go. With datagram_stream_c.h in include/, it defines
-// CRONET_GO_HAS_DATAGRAM_STREAM, on which datagram_stream_cgo.h takes the real functions instead of its stubs: the Go
-// build cache keys on this file, not on what include/ holds.
+// CRONET_GO_HAS_DATAGRAM_STREAM, on which datagram_stream_cgo.h takes the real functions instead of its stubs; with a
+// cronet_c.h that declares the exact server certificates, CRONET_GO_HAS_EXACT_SERVER_CERTIFICATES, on which
+// exact_server_certificates_cgo.go does the same. The Go build cache keys on this file, not on what include/ holds.
 func generateCGOConfig() {
 	cflags := "-I${SRCDIR}/include"
 	if _, err := os.Stat(filepath.Join(projectRoot, "include", "datagram_stream_c.h")); err == nil {
 		cflags += " -DCRONET_GO_HAS_DATAGRAM_STREAM=1"
+	}
+	cronetHeader, err := os.ReadFile(filepath.Join(projectRoot, "include", "cronet_c.h"))
+	if err != nil {
+		log.Fatalf("failed to read include/cronet_c.h: %v", err)
+	}
+	if strings.Contains(string(cronetHeader), "Cronet_EngineParams_exact_server_certificates_add") {
+		cflags += " -DCRONET_GO_HAS_EXACT_SERVER_CERTIFICATES=1"
 	}
 	content := fmt.Sprintf(`//go:build !with_purego
 
@@ -127,7 +135,7 @@ package cronet
 import "C"
 `, cflags)
 	path := filepath.Join(projectRoot, "include_cgo.go")
-	err := os.WriteFile(path, []byte(content), 0o644)
+	err = os.WriteFile(path, []byte(content), 0o644)
 	if err != nil {
 		log.Fatalf("failed to write include_cgo.go: %v", err)
 	}

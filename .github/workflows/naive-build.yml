@@ -162,6 +162,25 @@ jobs:
             exit 1
           fi
           CRONET_TEST_NO_DATAGRAM_SUPPORT=1 ./cronet.nodatagram.test -test.v -test.run='TestDatagramUnsupportedLibrary|TestEngineVersion'
+      # The cgo build of a library without exact server certificates: include_cgo.go without the define that goes with
+      # them. cronet_c.h still declares them, and the stand-ins have names of their own. It must build and link, and
+      # report no support for them.
+      - name: Build and run test binary without exact server certificates
+        run: |
+          eval $(go run ./cmd/build-naive --target=linux/${{ matrix.arch }} env --export)
+          grep -q -- '-DCRONET_GO_HAS_EXACT_SERVER_CERTIFICATES=1' include_cgo.go
+          cp include_cgo.go include_cgo.go.saved
+          sed -i 's/ -DCRONET_GO_HAS_EXACT_SERVER_CERTIFICATES=1//' include_cgo.go
+          # Not "! grep": bash -e does not stop on a negated command.
+          if grep -q CRONET_GO_HAS_EXACT_SERVER_CERTIFICATES include_cgo.go; then
+            echo "include_cgo.go still has the define"
+            exit 1
+          fi
+          status=0
+          CGO_ENABLED=1 GOOS=linux GOARCH=${{ matrix.arch }} go -C test test -c -o ../cronet.noexact.test . || status=$?
+          mv include_cgo.go.saved include_cgo.go
+          [ "$status" -eq 0 ]
+          CRONET_TEST_NO_EXACT_SERVER_CERTIFICATES=1 ./cronet.noexact.test -test.v -test.run='TestExactServerCertificatesUnsupportedLibrary|TestEngineVersion'
       - name: Build purego test binary
         run: |
           cp lib/linux_${{ matrix.arch }}/libcronet.so .
@@ -293,7 +312,7 @@ jobs:
           # The DLL beside the test binary, which purego loads from there
           cp lib/windows_${{ matrix.arch }}/libcronet.dll .
           CGO_ENABLED=0 GOOS=windows GOARCH=${{ matrix.arch }} go -C test test -tags with_purego -c -o ../cronet.test.exe .
-          ./cronet.test.exe -test.v -test.run='TestEngineVersion|TestPublicSiteChainEndsAtTrustedIntermediate|TestDatagram'
+          ./cronet.test.exe -test.v -test.run='TestEngineVersion|TestPublicSiteChainEndsAtTrustedIntermediate|TestDatagram|TestExactServerCertificates|TestNaiveExactServerCertificates'
         env:
           CRONET_TEST_PUBLIC_SITES: "1"
       - name: Generate checksums
