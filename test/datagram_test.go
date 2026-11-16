@@ -11,11 +11,14 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+	"weak"
 
 	cronet "github.com/sagernet/cronet-go"
 	M "github.com/sagernet/sing/common/metadata"
@@ -31,14 +34,40 @@ const (
 	datagramContextID   = 2
 	datagramCapsuleType = http3.CapsuleType(0)
 	datagramPath        = "/.well-known/masque/udp/%2A/%2A/"
-	// datagramCloseData asks the echo server to close the stream cleanly.
-	datagramCloseData = "close"
+	// The commands of the echo server, in the UDP data of a datagram: close the stream cleanly (FIN), close it as
+	// quic-go and the node do when they end a stream (STOP_SENDING and FIN), reset it, send N capsules at once, send
+	// a datagram with another Context ID and then "ctx2".
+	datagramCloseData     = "close"
+	datagramCloseStopData = "close-stop"
+	datagramResetData     = "reset"
+	datagramBurstPrefix   = "burst-capsules "
+	datagramWrongContext  = "wrong-context"
+)
+
+// The request headers of the echo server's modes: answer nothing; send datagrams and capsules without end; answer
+// with a capsule and the end of the stream at once ("fin", or "stop" for STOP_SENDING and FIN); read nothing.
+const (
+	datagramHoldHeader        = "x-test-hold"
+	datagramFloodHeader       = "x-test-flood"
+	datagramAnswerCloseHeader = "x-test-answer-close"
+	datagramStallHeader       = "x-test-stall"
+	// datagramAnswerCloseData is the data of the capsule that comes with the answer and the end.
+	datagramAnswerCloseData = "with the answer"
 )
 
 // udpPayload is a payload of the format: to 127.0.0.1:53 with data.
 func udpPayload(data []byte) []byte {
 	payload := make([]byte, 0, 7+len(data))
 	payload = append(payload, 4, 127, 0, 0, 1)
+	payload = binary.BigEndian.AppendUint16(payload, 53)
+	return append(payload, data...)
+}
+
+// udpPayloadToName is a payload of the format to a name of 255 bytes, port 53: with 65507 bytes of data, the longest.
+func udpPayloadToName(data []byte) []byte {
+	payload := make([]byte, 0, 1+1+255+2+len(data))
+	payload = append(payload, 3, 255)
+	payload = append(payload, bytes.Repeat([]byte{'n'}, 255)...)
 	payload = binary.BigEndian.AppendUint16(payload, 53)
 	return append(payload, data...)
 }
@@ -133,17 +162,55 @@ func (s *udpEchoServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
+	if r.Header.Get(datagramHoldHeader) == "1" {
+		<-r.Context().Done()
+		return
+	}
 	w.Header().Set("capsule-protocol", "?1")
 	w.Header().Set("niko-udp", "1")
 	w.WriteHeader(http.StatusOK)
 	stream := w.(http3.HTTPStreamer).HTTPStream()
-	if r.Header.Get("x-test-stall") == "1" {
+	switch r.Header.Get(datagramAnswerCloseHeader) {
+	case "fin", "stop":
+		// The answer, a capsule and the end, in one go.
+		if r.Header.Get(datagramAnswerCloseHeader) == "stop" {
+			stream.CancelRead(quic.StreamErrorCode(http3.ErrCodeNoError))
+		}
+		var capsule bytes.Buffer
+		_ = http3.WriteCapsule(&capsule, datagramCapsuleType,
+			append([]byte{datagramContextID}, udpPayload([]byte(datagramAnswerCloseData))...))
+		_, _ = stream.Write(capsule.Bytes())
+		stream.Close()
+		<-r.Context().Done()
+		return
+	}
+	if r.Header.Get(datagramStallHeader) == "1" {
 		// Reads nothing: the stream of the client stalls once the flow control window is full.
 		<-r.Context().Done()
 		return
 	}
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
+	if r.Header.Get(datagramFloodHeader) == "1" {
+		// Datagrams and capsules without end, until the client goes.
+		datagram := append([]byte{datagramContextID}, udpPayload([]byte("flood"))...)
+		var capsule bytes.Buffer
+		_ = http3.WriteCapsule(&capsule, datagramCapsuleType, datagram)
+		readDone := make(chan struct{})
+		go func() {
+			defer close(readDone)
+			_, _ = io.Copy(io.Discard, stream)
+			cancel()
+		}()
+		for ctx.Err() == nil {
+			_ = stream.SendDatagram(datagram)
+			if _, err := stream.Write(capsule.Bytes()); err != nil {
+				break
+			}
+		}
+		<-readDone
+		return
+	}
 
 	var writeAccess sync.Mutex
 	echo := func(datagram []byte, inCapsule bool) {
@@ -159,11 +226,36 @@ func (s *udpEchoServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		writeAccess.Lock()
 		defer writeAccess.Unlock()
-		if string(data) == datagramCloseData {
-			// A clean close, as the node's when the socket is idle: FIN, and the stream ends once the client resets
-			// its side.
+		switch {
+		case string(data) == datagramCloseData:
+			// A clean close: FIN, and the stream ends once the client resets its side.
 			stream.Close()
 			cancel()
+			return
+		case string(data) == datagramCloseStopData:
+			// A clean close as quic-go and the node make it: STOP_SENDING and FIN.
+			stream.CancelRead(quic.StreamErrorCode(http3.ErrCodeNoError))
+			stream.Close()
+			cancel()
+			return
+		case string(data) == datagramResetData:
+			stream.CancelRead(quic.StreamErrorCode(http3.ErrCodeRequestCanceled))
+			stream.CancelWrite(quic.StreamErrorCode(http3.ErrCodeRequestCanceled))
+			cancel()
+			return
+		case strings.HasPrefix(string(data), datagramBurstPrefix):
+			count, _ := strconv.Atoi(strings.TrimPrefix(string(data), datagramBurstPrefix))
+			var capsules bytes.Buffer
+			for i := 0; i < count; i++ {
+				_ = http3.WriteCapsule(&capsules, datagramCapsuleType,
+					append([]byte{datagramContextID}, udpPayload([]byte(strconv.Itoa(i)))...))
+			}
+			_, _ = stream.Write(capsules.Bytes())
+			return
+		case string(data) == datagramWrongContext:
+			// Context ID 4, then 2: only the second is the client's.
+			_ = stream.SendDatagram(append(quicvarint.Append(nil, 4), udpPayload([]byte("ctx4"))...))
+			_ = stream.SendDatagram(append([]byte{datagramContextID}, udpPayload([]byte("ctx2"))...))
 			return
 		}
 		if !inCapsule && stream.SendDatagram(datagram) == nil {
@@ -272,7 +364,12 @@ func TestDatagramStreamQUIC(t *testing.T) {
 	server := startUDPEchoServer(t, certPem, keyPem, true)
 	engine := datagramTestClient(t, caPem, server.port)
 
-	conn := engine.CreateDatagramConn(context.Background(), server.url(), datagramRequestHeaders(true))
+	// The headers of the caller go through; "-force-quic", which the library sets too, and a capsule-protocol of the
+	// caller's spelling are sent once (and the first not at all).
+	headers := datagramRequestHeaders(true)
+	headers["X-Extra-Header"] = "extra"
+	headers["Capsule-Protocol"] = "?1"
+	conn := engine.CreateDatagramConn(context.Background(), server.url(), headers)
 	defer conn.Close()
 
 	// Before the answer: a capsule, at once.
@@ -292,9 +389,10 @@ func TestDatagramStreamQUIC(t *testing.T) {
 
 	requestHeaders, proto, path := server.requestHeaders()
 	require.Equal(t, "connect-udp", proto)
-	require.Equal(t, "?1", requestHeaders.Get("capsule-protocol"))
-	require.Empty(t, requestHeaders.Get("-connect-protocol"))
-	require.Empty(t, requestHeaders.Get("-force-quic"))
+	require.Equal(t, []string{"?1"}, requestHeaders.Values("capsule-protocol"))
+	require.Equal(t, "extra", requestHeaders.Get("x-extra-header"))
+	require.Empty(t, requestHeaders.Values("-connect-protocol"))
+	require.Empty(t, requestHeaders.Values("-force-quic"))
 	t.Logf("request path %q, headers %v", path, requestHeaders)
 
 	maxPayload := conn.MaxPayload()
@@ -312,16 +410,18 @@ func TestDatagramStreamQUIC(t *testing.T) {
 	require.GreaterOrEqual(t, server.datagrams.Load(), int64(20))
 	require.Equal(t, capsulesBefore, server.capsules.Load(), "datagrams that fit went in capsules")
 
-	// Just above the QUIC datagram, and the longest datagram of UDP: capsules both ways.
-	for _, length := range []int{maxPayload + 1, 65507} {
-		data := bytes.Repeat([]byte{byte(length)}, length-7)
-		payload := udpPayload(data)
-		require.Len(t, payload, length)
+	// Just above the QUIC datagram, and the longest payload (a name of 255 bytes and 65507 bytes of data): capsules
+	// both ways.
+	for _, payload := range [][]byte{
+		udpPayload(bytes.Repeat([]byte{1}, maxPayload+1-7)),
+		udpPayloadToName(bytes.Repeat([]byte{2}, 65507)),
+	} {
 		capsules := server.capsules.Load()
 		require.NoError(t, conn.WriteDatagram(payload))
 		require.Equal(t, payload, readDatagram(t, conn, buffer))
 		require.Equal(t, capsules+1, server.capsules.Load())
 	}
+	require.Len(t, udpPayloadToName(make([]byte, 65507)), 65766)
 
 	// A datagram cut to the buffer.
 	payload := udpPayload([]byte("0123456789"))
@@ -546,4 +646,252 @@ func TestDatagramStreamCapsuleTimeout(t *testing.T) {
 
 	stream.Cancel()
 	require.Equal(t, "canceled", receiveWithin(t, recorder.end, "end"))
+}
+
+// TestDatagramStreamCancelDestroyFlood cancels and destroys streams back to back while the server floods them with
+// datagrams and capsules: the library must not call into a destroyed stream.
+func TestDatagramStreamCancelDestroyFlood(t *testing.T) {
+	require.NoError(t, cronet.CheckDatagramSupport())
+	caPem, certPem, keyPem := generateCertificate(t, "example.org")
+	server := startUDPEchoServer(t, certPem, keyPem, true)
+	engine := datagramTestClient(t, caPem, server.port)
+	headers := datagramRequestHeaders(true)
+	headers[datagramFloodHeader] = "1"
+
+	for round := 0; round < 60; round++ {
+		recorder := newDatagramStreamRecorder()
+		stream := engine.CreateDatagramStream(recorder)
+		require.True(t, stream.Start(server.url(), headers))
+		if round%3 != 0 {
+			require.Equal(t, 200, receiveWithin(t, recorder.ready, "response"))
+			if round%3 == 2 {
+				receiveWithin(t, recorder.datagrams, "a datagram of the flood")
+			}
+		}
+		_ = stream.Send(udpPayload([]byte("x")), true)
+		stream.Cancel()
+		require.True(t, stream.Destroy())
+	}
+	// What the network thread still had for the destroyed streams.
+	time.Sleep(500 * time.Millisecond)
+
+	// The engine still works.
+	conn := engine.CreateDatagramConn(context.Background(), server.url(), datagramRequestHeaders(true))
+	defer conn.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	status, _, err := conn.WaitReady(ctx)
+	require.NoError(t, err)
+	require.Equal(t, 200, status)
+}
+
+// TestDatagramStreamCloseWithStopSending: the node ends the stream as quic-go does, with STOP_SENDING and FIN: a
+// clean end, not a failure.
+func TestDatagramStreamCloseWithStopSending(t *testing.T) {
+	require.NoError(t, cronet.CheckDatagramSupport())
+	caPem, certPem, keyPem := generateCertificate(t, "example.org")
+	server := startUDPEchoServer(t, certPem, keyPem, true)
+	engine := datagramTestClient(t, caPem, server.port)
+
+	conn := engine.CreateDatagramConn(context.Background(), server.url(), datagramRequestHeaders(true))
+	defer conn.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	_, _, err := conn.WaitReady(ctx)
+	require.NoError(t, err)
+	require.NoError(t, conn.WriteDatagram(udpPayload([]byte(datagramCloseStopData))))
+	_, err = conn.ReadDatagram(ctx, make([]byte, 64))
+	require.ErrorIs(t, err, io.EOF)
+	require.ErrorIs(t, conn.Err(), io.EOF)
+}
+
+// TestDatagramStreamServerReset: the node resets the stream after 200: a failure.
+func TestDatagramStreamServerReset(t *testing.T) {
+	require.NoError(t, cronet.CheckDatagramSupport())
+	caPem, certPem, keyPem := generateCertificate(t, "example.org")
+	server := startUDPEchoServer(t, certPem, keyPem, true)
+	engine := datagramTestClient(t, caPem, server.port)
+
+	conn := engine.CreateDatagramConn(context.Background(), server.url(), datagramRequestHeaders(true))
+	defer conn.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	_, _, err := conn.WaitReady(ctx)
+	require.NoError(t, err)
+	require.NoError(t, conn.WriteDatagram(udpPayload([]byte(datagramResetData))))
+	_, err = conn.ReadDatagram(ctx, make([]byte, 64))
+	var netError cronet.NetError
+	require.True(t, errors.As(err, &netError), "read after a reset = %v", err)
+	t.Logf("reset: %v (%s)", netError, netError.Name())
+}
+
+// TestDatagramStreamAnswerWithEnd: the answer, a datagram and the end of the stream come together; the datagram is
+// read before the end.
+func TestDatagramStreamAnswerWithEnd(t *testing.T) {
+	require.NoError(t, cronet.CheckDatagramSupport())
+	caPem, certPem, keyPem := generateCertificate(t, "example.org")
+	server := startUDPEchoServer(t, certPem, keyPem, true)
+	engine := datagramTestClient(t, caPem, server.port)
+
+	for _, mode := range []string{"fin", "stop"} {
+		t.Run(mode, func(t *testing.T) {
+			headers := datagramRequestHeaders(true)
+			headers[datagramAnswerCloseHeader] = mode
+			conn := engine.CreateDatagramConn(context.Background(), server.url(), headers)
+			defer conn.Close()
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			status, _, err := conn.WaitReady(ctx)
+			require.NoError(t, err)
+			require.Equal(t, 200, status)
+			buffer := make([]byte, 128)
+			n, err := conn.ReadDatagram(ctx, buffer)
+			require.NoError(t, err)
+			require.Equal(t, udpPayload([]byte(datagramAnswerCloseData)), buffer[:n])
+			_, err = conn.ReadDatagram(ctx, buffer)
+			require.ErrorIs(t, err, io.EOF)
+		})
+	}
+}
+
+// TestDatagramConnBeforeAnswer closes conns, or cancels their setup context, before the node answers (it never
+// does): they end with net.ErrClosed or the context's error, and nothing keeps them alive.
+func TestDatagramConnBeforeAnswer(t *testing.T) {
+	require.NoError(t, cronet.CheckDatagramSupport())
+	caPem, certPem, keyPem := generateCertificate(t, "example.org")
+	server := startUDPEchoServer(t, certPem, keyPem, true)
+	engine := datagramTestClient(t, caPem, server.port)
+	headers := datagramRequestHeaders(true)
+	headers[datagramHoldHeader] = "1"
+
+	var conns []weak.Pointer[cronet.DatagramConn]
+	for i := 0; i < 90; i++ {
+		ctx, cancel := context.WithCancel(context.Background())
+		conn := engine.CreateDatagramConn(ctx, server.url(), headers)
+		_ = conn.WriteDatagram(udpPayload([]byte("early")))
+		switch i % 3 {
+		case 0:
+			require.NoError(t, conn.Close())
+		case 1:
+			cancel()
+		case 2:
+			conn.Close()
+			cancel()
+		}
+		select {
+		case <-conn.Done():
+		case <-time.After(10 * time.Second):
+			t.Fatalf("conn %d did not end", i)
+		}
+		err := conn.Err()
+		require.True(t, errors.Is(err, net.ErrClosed) || errors.Is(err, context.Canceled), "Err = %v", err)
+		cancel()
+		conns = append(conns, weak.Make(conn))
+	}
+	require.Eventually(t, func() bool {
+		runtime.GC()
+		for _, conn := range conns {
+			if conn.Value() != nil {
+				return false
+			}
+		}
+		return true
+	}, 5*time.Second, 20*time.Millisecond, "ended conns are still referenced")
+}
+
+// TestDatagramStreamOtherContextID: a datagram with another Context ID than 2 is dropped.
+func TestDatagramStreamOtherContextID(t *testing.T) {
+	require.NoError(t, cronet.CheckDatagramSupport())
+	caPem, certPem, keyPem := generateCertificate(t, "example.org")
+	server := startUDPEchoServer(t, certPem, keyPem, true)
+	engine := datagramTestClient(t, caPem, server.port)
+
+	conn := engine.CreateDatagramConn(context.Background(), server.url(), datagramRequestHeaders(true))
+	defer conn.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	_, _, err := conn.WaitReady(ctx)
+	require.NoError(t, err)
+	require.NoError(t, conn.WriteDatagram(udpPayload([]byte(datagramWrongContext))))
+	require.Equal(t, udpPayload([]byte("ctx2")), readDatagram(t, conn, make([]byte, 64)))
+}
+
+// TestDatagramConnReceiveOverflow: a burst the reader does not keep up with fills the receive queue; the rest is
+// dropped and counted. Capsules lose nothing on the way, so every one is read or counted.
+func TestDatagramConnReceiveOverflow(t *testing.T) {
+	require.NoError(t, cronet.CheckDatagramSupport())
+	caPem, certPem, keyPem := generateCertificate(t, "example.org")
+	server := startUDPEchoServer(t, certPem, keyPem, true)
+	engine := datagramTestClient(t, caPem, server.port)
+
+	conn := engine.CreateDatagramConn(context.Background(), server.url(), datagramRequestHeaders(true))
+	defer conn.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	_, _, err := conn.WaitReady(ctx)
+	require.NoError(t, err)
+
+	const burst = 1000
+	require.NoError(t, conn.WriteDatagram(udpPayload([]byte(datagramBurstPrefix+strconv.Itoa(burst)))))
+	require.Eventually(t, func() bool {
+		receive, _ := conn.Dropped()
+		return receive >= burst-256
+	}, 10*time.Second, 10*time.Millisecond)
+	buffer := make([]byte, 64)
+	read := 0
+	for {
+		readCtx, readCancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+		n, err := conn.ReadDatagram(readCtx, buffer)
+		readCancel()
+		if err != nil {
+			require.ErrorIs(t, err, context.DeadlineExceeded)
+			break
+		}
+		require.Equal(t, udpPayload([]byte(strconv.Itoa(read))), buffer[:n], "the oldest are kept")
+		read++
+	}
+	receive, _ := conn.Dropped()
+	require.Equal(t, 256, read)
+	require.EqualValues(t, burst-256, receive)
+}
+
+// TestDatagramConnConcurrentWritersClose writes from many goroutines, datagrams and capsules, and closes meanwhile.
+func TestDatagramConnConcurrentWritersClose(t *testing.T) {
+	require.NoError(t, cronet.CheckDatagramSupport())
+	caPem, certPem, keyPem := generateCertificate(t, "example.org")
+	server := startUDPEchoServer(t, certPem, keyPem, true)
+	engine := datagramTestClient(t, caPem, server.port)
+
+	for round := 0; round < 20; round++ {
+		conn := engine.CreateDatagramConn(context.Background(), server.url(), datagramRequestHeaders(true))
+		var wg sync.WaitGroup
+		for g := 0; g < 8; g++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				payload := udpPayload(bytes.Repeat([]byte{1}, 100+g*400))
+				for i := 0; i < 300; i++ {
+					switch err := conn.WriteDatagram(payload); {
+					case err == nil, errors.Is(err, cronet.ErrDatagramQueueFull),
+						errors.Is(err, cronet.ErrDatagramCapsuleTimeout):
+					case errors.Is(err, net.ErrClosed), errors.Is(err, cronet.ErrDatagramClosed):
+						return
+					default:
+						t.Errorf("WriteDatagram = %v", err)
+						return
+					}
+					_ = conn.MaxPayload()
+					_, _ = conn.Dropped()
+				}
+			}()
+		}
+		time.Sleep(time.Duration(round%5) * 5 * time.Millisecond)
+		conn.Close()
+		wg.Wait()
+		select {
+		case <-conn.Done():
+		case <-time.After(10 * time.Second):
+			t.Fatal("the conn did not end")
+		}
+	}
 }
