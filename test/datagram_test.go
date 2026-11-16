@@ -720,7 +720,8 @@ func TestDatagramStreamStopSendingWithCapsuleInStream(t *testing.T) {
 }
 
 // TestDatagramStreamCancelDestroyFlood cancels and destroys streams back to back while the server floods them with
-// datagrams and capsules: the library must not call into a destroyed stream.
+// datagrams and capsules. A call into a destroyed stream shows only if it crashes the process, as it did with the
+// library before the fix; the test cannot prove there is none.
 func TestDatagramStreamCancelDestroyFlood(t *testing.T) {
 	require.NoError(t, cronet.CheckDatagramSupport())
 	caPem, certPem, keyPem := generateCertificate(t, "example.org")
