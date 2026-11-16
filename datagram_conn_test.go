@@ -768,6 +768,44 @@ func TestDatagramStreamWithoutLibrarySupport(t *testing.T) {
 	stream.Cancel()
 }
 
+func TestDatagramConnQueueBytes(t *testing.T) {
+	conn, stream := newTestDatagramConn(t)
+	stream.ready(200, nil)
+	large := bytes.Repeat([]byte{3}, 60000)
+	for i := 0; i < 20; i++ {
+		stream.datagram(large)
+	}
+	stream.sync()
+	fit := datagramConnQueueBytes / len(large)
+	if receive, _ := conn.Dropped(); receive != uint64(20-fit) {
+		t.Fatalf("dropped %d, want %d", receive, 20-fit)
+	}
+	// Reading makes room again.
+	if data, err := readOne(t, conn, 70000); err != nil || len(data) != len(large) {
+		t.Fatalf("read %d bytes, %v", len(data), err)
+	}
+	stream.datagram(large)
+	stream.sync()
+	if receive, _ := conn.Dropped(); receive != uint64(20-fit) {
+		t.Fatalf("dropped %d after reading", receive)
+	}
+	for i := 0; i < fit; i++ {
+		if _, err := readOne(t, conn, 70000); err != nil {
+			t.Fatal(err)
+		}
+	}
+	conn.queueAccess.Lock()
+	defer conn.queueAccess.Unlock()
+	if conn.queueBytes != 0 || conn.queueLength != 0 {
+		t.Fatalf("queue holds %d bytes in %d datagrams", conn.queueBytes, conn.queueLength)
+	}
+	for i, slot := range conn.queue {
+		if cap(slot) > datagramConnSlotKeep {
+			t.Fatalf("slot %d keeps %d bytes", i, cap(slot))
+		}
+	}
+}
+
 // TestDatagramConnErrBeforeDone: once Err is set, Done is closed.
 func TestDatagramConnErrBeforeDone(t *testing.T) {
 	violations := 0

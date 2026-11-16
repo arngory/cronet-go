@@ -14,8 +14,10 @@ import (
 )
 
 const (
-	// datagramConnQueueSize is how many received datagrams wait for ReadDatagram. Past it, new ones are dropped.
-	datagramConnQueueSize = 256
+	// datagramConnQueueSize is how many received datagrams wait for ReadDatagram, and datagramConnQueueBytes how many
+	// bytes of them. Past either, new ones are dropped.
+	datagramConnQueueSize  = 256
+	datagramConnQueueBytes = 1 << 20
 	// datagramConnSlotSize is the capacity a slot of the queue starts with, and datagramConnSlotKeep the most it
 	// keeps between datagrams: a capsule up to 64 KiB gets a buffer of its own, which goes once it is read.
 	datagramConnSlotSize = 2048
@@ -66,6 +68,7 @@ type DatagramConn struct {
 	queue       [datagramConnQueueSize][]byte
 	queueHead   int
 	queueLength int
+	queueBytes  int
 	readable    chan struct{}
 
 	droppedReceive  atomic.Uint64
@@ -191,7 +194,8 @@ func (c *DatagramConn) WaitReady(ctx context.Context) (status int, headers map[s
 	}
 }
 
-// ReadDatagram reads the next datagram into b, without an allocation. A datagram longer than b is cut to len(b) and
+// ReadDatagram reads the next datagram into b, without an allocation. Up to 256 received datagrams, and 1 MiB of
+// them, wait to be read; past that, new ones are dropped and counted (Dropped). A datagram longer than b is cut to len(b) and
 // reported with ErrDatagramTruncated. Once the stream has ended, the datagrams still queued are read first, then the
 // error of the end: io.EOF after a clean close by the node.
 func (c *DatagramConn) ReadDatagram(ctx context.Context, b []byte) (n int, err error) {
@@ -240,6 +244,7 @@ func (c *DatagramConn) dequeue(b []byte) (n int, truncated bool, ok bool) {
 	slot := &c.queue[c.queueHead]
 	n = copy(b, *slot)
 	truncated = n < len(*slot)
+	c.queueBytes -= len(*slot)
 	if cap(*slot) > datagramConnSlotKeep {
 		*slot = nil
 	} else {
@@ -257,7 +262,7 @@ func (c *DatagramConn) dequeue(b []byte) (n int, truncated bool, ok bool) {
 
 func (c *DatagramConn) enqueue(data []byte) {
 	c.queueAccess.Lock()
-	if c.queueLength == datagramConnQueueSize {
+	if c.queueLength == datagramConnQueueSize || c.queueBytes+len(data) > datagramConnQueueBytes {
 		c.queueAccess.Unlock()
 		c.droppedReceive.Add(1)
 		return
@@ -268,6 +273,7 @@ func (c *DatagramConn) enqueue(data []byte) {
 	}
 	*slot = append((*slot)[:0], data...)
 	c.queueLength++
+	c.queueBytes += len(data)
 	c.queueAccess.Unlock()
 	c.signalReadable()
 }
@@ -327,8 +333,8 @@ func (c *DatagramConn) SetDeadline(t time.Time) error {
 	return nil
 }
 
-// Dropped counts the datagrams dropped because the receive queue was full, and the capsules the library dropped
-// after they waited 100 ms for the stream.
+// Dropped counts the datagrams dropped because the receive queue was full (256 datagrams or 1 MiB), and those the
+// library dropped after it took them (see DatagramStream.DroppedCapsules).
 func (c *DatagramConn) Dropped() (receive, capsules uint64) {
 	c.access.RLock()
 	if c.destroyed {
