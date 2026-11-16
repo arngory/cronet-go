@@ -104,7 +104,8 @@ func (s DatagramStream) Start(url string, headers map[string]string) bool {
 }
 
 // Send copies data and queues it for the network thread without blocking. With allowCapsule, a datagram that does
-// not fit in a QUIC datagram goes in a capsule (naive-udp-v1 §4.4); until OnReady every datagram does.
+// not fit in a QUIC datagram goes in a capsule (naive-udp-v1 §4.4); without it, ErrDatagramTooLarge. Until OnReady
+// with 200 nothing fits: every datagram needs a capsule.
 func (s DatagramStream) Send(data []byte, allowCapsule bool) error {
 	if s.ptr == 0 {
 		return ErrDatagramUnsupported
