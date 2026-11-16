@@ -42,6 +42,10 @@ const (
 	datagramResetData     = "reset"
 	datagramBurstPrefix   = "burst-capsules "
 	datagramWrongContext  = "wrong-context"
+	// The command of the server that reads nothing (datagramStallHeader), in a QUIC datagram: stop reading the
+	// stream with STOP_SENDING alone, then send datagramStoppedData in a datagram.
+	datagramStopReadingData = "stop-reading"
+	datagramStoppedData     = "stopped"
 )
 
 // The request headers of the echo server's modes: answer nothing; send datagrams and capsules without end; answer
@@ -185,9 +189,23 @@ func (s *udpEchoServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.Header.Get(datagramStallHeader) == "1" {
-		// Reads nothing: the stream of the client stalls once the flow control window is full.
-		<-r.Context().Done()
-		return
+		// Reads nothing of the stream: the stream of the client stalls once the flow control window is full. Of the
+		// datagrams, it takes datagramStopReadingData.
+		for {
+			datagram, err := stream.ReceiveDatagram(r.Context())
+			if err != nil {
+				return
+			}
+			if len(datagram) == 0 || datagram[0] != datagramContextID {
+				continue
+			}
+			if data, ok := udpData(datagram[1:]); ok && string(data) == datagramStopReadingData {
+				stream.CancelRead(quic.StreamErrorCode(http3.ErrCodeNoError))
+				_ = stream.SendDatagram(append([]byte{datagramContextID}, udpPayload([]byte(datagramStoppedData))...))
+				<-r.Context().Done()
+				return
+			}
+		}
 	}
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
@@ -644,6 +662,59 @@ func TestDatagramStreamCapsuleTimeout(t *testing.T) {
 		"the stale capsules were not dropped")
 	t.Logf("dropped capsules %d", stream.DroppedCapsules())
 
+	stream.Cancel()
+	require.Equal(t, "canceled", receiveWithin(t, recorder.end, "end"))
+}
+
+// TestDatagramStreamStopSendingWithCapsuleInStream: the server stops reading the stream with STOP_SENDING alone
+// while a capsule waits in the send buffer. The capsule is dropped, and a send that needs a capsule is refused as
+// closed, not as a capsule timeout for ever; datagrams still come in, and the stream does not end.
+func TestDatagramStreamStopSendingWithCapsuleInStream(t *testing.T) {
+	require.NoError(t, cronet.CheckDatagramSupport())
+	caPem, certPem, keyPem := generateCertificate(t, "example.org")
+	server := startUDPEchoServer(t, certPem, keyPem, true)
+	engine := datagramTestClient(t, caPem, server.port)
+
+	recorder := newDatagramStreamRecorder()
+	stream := engine.CreateDatagramStream(recorder)
+	headers := datagramRequestHeaders(true)
+	headers[datagramStallHeader] = "1"
+	require.True(t, stream.Start(server.url(), headers))
+	defer stream.Destroy()
+	require.Equal(t, 200, receiveWithin(t, recorder.ready, "response"))
+
+	// Capsules until one waits in the send buffer for longer than 100 ms.
+	capsule := udpPayload(make([]byte, 60000))
+	deadline := time.Now().Add(20 * time.Second)
+	for {
+		err := stream.Send(capsule, true)
+		if errors.Is(err, cronet.ErrDatagramCapsuleTimeout) {
+			break
+		}
+		if err != nil {
+			require.ErrorIs(t, err, cronet.ErrDatagramQueueFull)
+		}
+		require.True(t, time.Now().Before(deadline), "no capsule waits in the send buffer")
+		time.Sleep(2 * time.Millisecond)
+	}
+	// What the queue still drops goes before the count to compare with.
+	time.Sleep(200 * time.Millisecond)
+	dropped := stream.DroppedCapsules()
+
+	require.NoError(t, stream.Send(udpPayload([]byte(datagramStopReadingData)), false))
+	require.Equal(t, udpPayload([]byte(datagramStoppedData)),
+		receiveWithin(t, recorder.datagrams, "the datagram after STOP_SENDING"))
+	require.Eventually(t, func() bool {
+		return errors.Is(stream.Send(capsule, true), cronet.ErrDatagramClosed)
+	}, 5*time.Second, 10*time.Millisecond, "a send that needs a capsule is not refused as closed")
+	require.ErrorIs(t, stream.Send(udpPayload([]byte("small")), false), cronet.ErrDatagramClosed)
+	require.Greater(t, stream.DroppedCapsules(), dropped, "the capsule in the send buffer is not counted")
+
+	select {
+	case end := <-recorder.end:
+		t.Fatalf("the stream ended (%s) while the server still sends", end)
+	case <-time.After(200 * time.Millisecond):
+	}
 	stream.Cancel()
 	require.Equal(t, "canceled", receiveWithin(t, recorder.end, "end"))
 }
