@@ -55,6 +55,7 @@ func packageTargets(targets []Target) {
 		{filepath.Join(srcRoot, "components/cronet/native/include/cronet_export.h"), "cronet_export.h"},
 		{filepath.Join(srcRoot, "components/cronet/native/generated/cronet.idl_c.h"), "cronet.idl_c.h"},
 		{filepath.Join(srcRoot, "components/grpc_support/include/bidirectional_stream_c.h"), "bidirectional_stream_c.h"},
+		{filepath.Join(srcRoot, "components/grpc_support/include/datagram_stream_c.h"), "datagram_stream_c.h"},
 	}
 
 	for _, header := range headers {
