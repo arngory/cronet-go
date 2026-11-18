@@ -26,7 +26,7 @@ func TestChromiumNotice(t *testing.T) {
 	root := writeTree(t, map[string]string{
 		"LICENSE":                          "Chromium BSD license text",
 		"third_party/zlib/README.chromium": "Name: zlib\nURL: https://zlib.net/\nVersion: 1.3\nLicense: Zlib\nLicense File: LICENSE\nShipped: yes\n\nDescription:\nLicense File: not-a-field\n",
-		"third_party/zlib/LICENSE":         "zlib text",
+		"third_party/zlib/LICENSE":         "zlib\r\ntext",
 		// two records, one with a path from src's root and one with two files
 		"base/third_party/apple/README.chromium": "Name: Darwin\nLicense: APSL-2.0\nLicense File: //third_party/zlib/LICENSE\nShipped: yes\n\n" +
 			dependencyDivider + "\n\nName: CF\nLicense: MIT, BSD-3-Clause\nLicense File: a.txt, b.txt\n",
@@ -53,15 +53,15 @@ func TestChromiumNotice(t *testing.T) {
 	for _, want := range []string{
 		"Licenses of libcronet",
 		"Chromium\nURL: https://www.chromium.org/\nLicense: BSD-3-Clause\n\nChromium BSD license text",
-		"zlib 1.3 (third_party/zlib)\nURL: https://zlib.net/\nLicense: Zlib\n\nzlib text",
-		"Darwin (base/third_party/apple)\nLicense: APSL-2.0\n\nzlib text",
+		"zlib 1.3 (third_party/zlib)\nURL: https://zlib.net/\nLicense: Zlib\n\nzlib\ntext",
+		"Darwin (base/third_party/apple)\nLicense: APSL-2.0\n\nzlib\ntext",
 		"CF (base/third_party/apple)\nLicense: MIT, BSD-3-Clause\n\ntext a\n\ntext b",
 	} {
 		if !strings.Contains(notice, want) {
 			t.Errorf("notice lacks %q:\n%s", want, notice)
 		}
 	}
-	for _, unwanted := range []string{"nasm", "property sheets", "test", "not-a-field"} {
+	for _, unwanted := range []string{"nasm", "property sheets", "test", "not-a-field", "\r"} {
 		if strings.Contains(notice, unwanted) {
 			t.Errorf("notice has %q:\n%s", unwanted, notice)
 		}

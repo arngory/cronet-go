@@ -148,7 +148,7 @@ func writeChromiumNotice(srcRoot, outputPath, header string) error {
 	var builder strings.Builder
 	builder.WriteString(header)
 	builder.WriteString("\n\n")
-	writeNoticeSection(&builder, "Chromium", "https://www.chromium.org/", "BSD-3-Clause", string(chromiumLicense))
+	writeNoticeSection(&builder, "Chromium", "https://www.chromium.org/", "BSD-3-Clause", unixNewlines(string(chromiumLicense)))
 	for _, dependency := range dependencies {
 		if dependency.Shipped == "no" {
 			continue
@@ -162,7 +162,7 @@ func writeChromiumNotice(srcRoot, outputPath, header string) error {
 			if err != nil {
 				return fmt.Errorf("%s (%s): license file: %w", dependency.Name, dependency.Directory, err)
 			}
-			texts = append(texts, strings.TrimSpace(string(data)))
+			texts = append(texts, strings.TrimSpace(unixNewlines(string(data))))
 		}
 		title := dependency.Name
 		if v := dependency.Version; v != "" && v != "N/A" && v != "0" && v != "git" && !strings.Contains(v, " ") {
@@ -172,6 +172,12 @@ func writeChromiumNotice(srcRoot, outputPath, header string) error {
 		writeNoticeSection(&builder, title, dependency.URL, dependency.License, strings.Join(texts, "\n\n"))
 	}
 	return os.WriteFile(outputPath, []byte(builder.String()), 0o644)
+}
+
+// unixNewlines makes the notice the same whichever platform built it: a
+// Windows checkout gives some license files CRLF line ends.
+func unixNewlines(text string) string {
+	return strings.ReplaceAll(text, "\r\n", "\n")
 }
 
 func writeNoticeSection(builder *strings.Builder, title, url, license, text string) {
