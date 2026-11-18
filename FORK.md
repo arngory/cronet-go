@@ -2,8 +2,8 @@
 
 A fork of [SagerNet/cronet-go](https://github.com/SagerNet/cronet-go), the Go bindings of naiveproxy's libcronet, for
 the naive client of [Niko](https://github.com/arngory/niko). The library itself is built from
-[arngory/naiveproxy](https://github.com/arngory/naiveproxy) (the `naiveproxy` submodule): the naive stack moved onto
-Chromium 158, see its FORK.md.
+[arngory/naiveproxy](https://github.com/arngory/naiveproxy) (the `naiveproxy` submodule, from its permanent branch
+`niko`): the naive stack moved onto Chromium 158, see its FORK.md.
 
 ## Branches
 

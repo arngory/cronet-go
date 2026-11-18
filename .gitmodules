@@ -1,4 +1,4 @@
 [submodule "naiveproxy"]
 	path = naiveproxy
 	url = https://github.com/arngory/naiveproxy.git
-	branch = claude/clever-feynman-w0e2v1
+	branch = niko
