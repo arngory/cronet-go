@@ -335,11 +335,19 @@ func generateSubmodules(targets []Target) {
 		log.Fatalf("failed to read CHROMIUM_VERSION: %v", err)
 	}
 	chromiumVersion := strings.TrimSpace(string(versionData))
+	naiveCommit := strings.TrimSpace(runCommandOutput(naiveRoot, "git", "rev-parse", "HEAD"))
+	noticeHeader := fmt.Sprintf("Licenses of Chromium %s and of the third-party code shipped in libcronet, built from\n"+
+		"arngory/naiveproxy %s. Made from the README.chromium files of that tree.", chromiumVersion, naiveCommit)
 
 	for _, t := range targets {
 		directoryName := getLibraryDirectoryName(t)
 		targetDirectory := filepath.Join(projectRoot, "lib", directoryName)
 		packageName := strings.ReplaceAll(directoryName, "-", "_")
+
+		noticePath := filepath.Join(targetDirectory, chromiumNoticeName)
+		if err := writeChromiumNotice(filepath.Join(naiveRoot, "src"), noticePath, noticeHeader); err != nil {
+			log.Fatalf("failed to write %s: %v", noticePath, err)
+		}
 
 		goModContent := fmt.Sprintf(`module github.com/sagernet/cronet-go/lib/%s
 
