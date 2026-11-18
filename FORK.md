@@ -11,7 +11,8 @@ the naive client of [Niko](https://github.com/arngory/niko). The library itself 
 |---|---|
 | `claude/clever-feynman-w0e2v1` | the source: upstream `main` (`73349ff`) and the changes below. Pull requests go here; a push runs Build (`naive-build.yml`) |
 | `go-158` | the Go module Niko takes: the source with the built libcronet in `lib/` (Android arm, arm64, 386 and amd64, Linux amd64, Windows amd64 and arm64). Build writes it on request (`publish`) and replaces it each time |
-| `niko/go-158-pins` | the `go-158` commit Niko pins now (`4fe4c13`), kept when `go-158` is replaced |
+| `niko/go-158-20261118` | the `go-158` commit Niko pins now (`747109c`, the first with `NOTICE.chromium.txt`) |
+| `niko/go-158-pins` | the commit Niko pinned before (`4fe4c13`; the same libraries, without the notice), kept for the builds that took it |
 | `niko/go-154-pins`, `niko/quic-local-roots` | the Chromium 154 line, for Niko's earlier builds |
 | `go-158-20261114`, `-2` … `-5` | earlier states of `go-158`; nothing pins them now |
 | `main`, `go`, `dev`, `go_dev` | upstream's |
@@ -42,7 +43,7 @@ gets a branch of its own (`niko/go-158-<YYYYMMDD>`).
 
 | Where | Pin |
 |---|---|
-| Niko `libcore/go.mod` | `replace` of `github.com/sagernet/cronet-go` and its `lib/*` modules to this fork, `v0.0.0-20261116191843-4fe4c13fa9b2`: `go-158` at `4fe4c13`, kept by `niko/go-158-pins` |
+| Niko `libcore/go.mod` and its core fork `arngory/sing-box` (branch `niko`, `go.mod`) | `replace` of `github.com/sagernet/cronet-go` and its `lib/*` modules to this fork, `v0.0.0-20261118091355-747109c6b573`: `go-158` at `747109c`, kept by `niko/go-158-20261118`. Niko's build checks that the two replaces match |
 
 ## Working on it
 
