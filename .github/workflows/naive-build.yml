@@ -8,7 +8,7 @@ on:
         type: boolean
         default: false
   push:
-    branches: [claude/clever-feynman-w0e2v1]
+    branches: [niko-main]
 
 permissions:
   contents: read
@@ -564,7 +564,7 @@ jobs:
   # Runs only when asked for by a manual dispatch of this branch. The target
   # branch is fixed: the push is forced and replaces what was published before.
   publish:
-    if: github.event_name == 'workflow_dispatch' && inputs.publish == true && github.ref == 'refs/heads/claude/clever-feynman-w0e2v1'
+    if: github.event_name == 'workflow_dispatch' && inputs.publish == true && github.ref == 'refs/heads/niko-main'
     needs: [unit, linux, android, windows, integration-test]
     runs-on: ubuntu-22.04
     timeout-minutes: 30
