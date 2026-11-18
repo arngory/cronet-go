@@ -14,11 +14,11 @@ the naive client of [Niko](https://github.com/arngory/niko). The library itself 
 | `niko/go-158-20261118` | the `go-158` commit Niko pins now (`747109c`, the first with `NOTICE.chromium.txt`) |
 | `niko/go-158-pins` | the commit Niko pinned before (`4fe4c13`; the same libraries, without the notice), kept for the builds that took it |
 | `niko/go-154-pins`, `niko/quic-local-roots` | the Chromium 154 line, for Niko's earlier builds |
-| `go-158-20261114`, `-2` … `-5` | earlier states of `go-158`; nothing pins them now |
+| `go-158-20261114`, `-2` … `-5` | earlier states of `go-158`. Four of them hold what Niko's releases 1.48.0 to 1.56.0 pin (see below); `-3` (`84acd91`) no release took |
 | `main`, `go`, `dev`, `go_dev` | upstream's |
 
-`niko/*` branches are never moved, rewritten or deleted: a pin on a commit that is gone no longer builds. A new pin
-gets a branch of its own (`niko/go-158-<YYYYMMDD>`).
+`niko/*` and `go-158-2*` branches are never moved, rewritten or deleted: a pin on a commit that is gone no longer
+builds, and the release that took it loses its source. A new pin gets a branch of its own (`niko/go-158-<YYYYMMDD>`).
 
 ## What differs from upstream
 
@@ -44,6 +44,19 @@ gets a branch of its own (`niko/go-158-<YYYYMMDD>`).
 | Where | Pin |
 |---|---|
 | Niko `libcore/go.mod` and its core fork `arngory/sing-box` (branch `niko`, `go.mod`) | `replace` of `github.com/sagernet/cronet-go` and its `lib/*` modules to this fork, `v0.0.0-20261118091355-747109c6b573`: `go-158` at `747109c`, kept by `niko/go-158-20261118`. Niko's build checks that the two replaces match |
+
+Niko's releases, by the commit their `libcore/go.mod` takes and the branch that keeps it:
+
+| Niko | Commit | Branch |
+|---|---|---|
+| 1.59.0 | `747109c` | `niko/go-158-20261118` |
+| 1.57.0, 1.58.0 | `4fe4c13` | `niko/go-158-pins` |
+| 1.51.0 to 1.56.0 | `5f3ef3f` | `go-158-20261114-5` |
+| 1.50.0 | `5c103a3` | `go-158-20261114-4` |
+| 1.49.0 | `d5ec437` | `go-158-20261114-2` |
+| 1.48.0 | `036584d` | `go-158-20261114` |
+| 1.46.0, 1.47.0 | `0b682fc` | `niko/go-154-pins` |
+| 1.29.0 to 1.45.0 | upstream's `0d28acc`, no `replace` | SagerNet/cronet-go |
 
 ## Working on it
 
