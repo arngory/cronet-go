@@ -1,5 +1,9 @@
 # cronet-go
 
+> **This is a fork.** arngory/cronet-go builds libcronet from arngory/naiveproxy (Chromium 158) and adds datagram
+> streams, certificate pins and CONNECT fields for [Niko](https://github.com/arngory/niko): its branches, what
+> differs and who pins it are in [FORK.md](FORK.md). The rest of this file is upstream's.
+
 [![Reference](https://pkg.go.dev/badge/github.com/sagernet/cronet-go.svg)](https://pkg.go.dev/github.com/sagernet/cronet-go)
 
 Go bindings for [naiveproxy](https://github.com/klzgrad/naiveproxy).
