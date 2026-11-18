@@ -2,8 +2,8 @@
 
 A fork of [SagerNet/cronet-go](https://github.com/SagerNet/cronet-go), the Go bindings of naiveproxy's libcronet, for
 the naive client of [Niko](https://github.com/arngory/niko). The library itself is built from
-[arngory/naiveproxy](https://github.com/arngory/naiveproxy) (the `naiveproxy` submodule): the naive stack moved onto
-Chromium 158, see its FORK.md.
+[arngory/naiveproxy](https://github.com/arngory/naiveproxy) (the `naiveproxy` submodule, from its permanent branch
+`niko`): the naive stack moved onto Chromium 158, see its FORK.md.
 
 ## Branches
 
@@ -30,6 +30,10 @@ gets a branch of its own (`niko/go-158-<YYYYMMDD>`).
 - **CONNECT header fields per stream** and `ConnectError` with the status and fields of a refusal
   (`DialEarlyWithHeaders`, `DialContextWithHeaders`; raycontrol `docs/spec/app-attest-v1.md`).
 - **Windows** amd64 and arm64 libraries; `libcronet.dll` is loaded from the executable's directory only, not `PATH`.
+- **Licenses next to the library**: each `lib/<os>_<arch>` module carries `NOTICE.chromium.txt`, the licenses of
+  Chromium and of each third-party component shipped in it (`Shipped` not `no` in its `README.chromium`), as plain
+  text. The minimized tree has no `tools/licenses`, so `cmd/build-naive` makes it from those files when it packages
+  the libraries.
 - **CI** (`naive-build.yml`): Go unit tests and purego cross-builds, the libraries for the platforms above, the test
   module (`test/`: datagram streams against a quic-go server, certificates, roots, CONNECT fields) on Linux and
   Windows; publishing to `go-158` on request.
