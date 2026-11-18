@@ -9,7 +9,8 @@ the naive client of [Niko](https://github.com/arngory/niko). The library itself 
 
 | Branch | What |
 |---|---|
-| `claude/clever-feynman-w0e2v1` | the source: upstream `main` (`73349ff`) and the changes below. Pull requests go here; a push runs Build (`naive-build.yml`) |
+| `niko-main` | the source and the default branch: upstream `main` (`73349ff`) and the changes below. Pull requests go here; a push runs Build (`naive-build.yml`), and Publish runs from here only. Not `niko`: git cannot hold a branch `niko` beside the `niko/*` ones |
+| `claude/clever-feynman-w0e2v1` | the source until 2026-11-18 (`41d0e10`, where `niko-main` starts); no longer built |
 | `go-158` | the Go module Niko takes: the source with the built libcronet in `lib/` (Android arm, arm64, 386 and amd64, Linux amd64, Windows amd64 and arm64). Build writes it on request (`publish`) and replaces it each time |
 | `niko/go-158-20261118` | the `go-158` commit Niko pins now (`747109c`, the first with `NOTICE.chromium.txt`) |
 | `niko/go-158-pins` | the commit Niko pinned before (`4fe4c13`; the same libraries, without the notice), kept for the builds that took it |
